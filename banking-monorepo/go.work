@@ -3,6 +3,6 @@ go 1.25.0
 use (
 	./pkg
 	./proto
-	./users-service
-	./wallet-service
+	./ms-users
+	./ms-wallet
 )
