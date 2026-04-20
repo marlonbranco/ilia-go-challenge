@@ -191,9 +191,3 @@ func (handler *AuthHandler) handleUseCaseError(response http.ResponseWriter, err
 		writeJSON(response, http.StatusInternalServerError, apiresponse.Error("INTERNAL_ERROR", "an unexpected error occurred", requestID))
 	}
 }
-
-func writeJSON(response http.ResponseWriter, status int, v any) {
-	response.Header().Set("Content-Type", "application/json")
-	response.WriteHeader(status)
-	json.NewEncoder(response).Encode(v)
-}
