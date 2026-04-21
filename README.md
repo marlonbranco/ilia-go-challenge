@@ -1,4 +1,4 @@
-# ília - Code Challenge NodeJS
+# ília - Code Challenge Go
 **English**
 ##### Before we start ⚠️
 **Please create a fork from this repository**
