@@ -13,6 +13,7 @@ proto:
 		proto/wallet.proto
 
 up: certs
+	@test -f .env || { echo "ERROR: .env not found. Run: cp .env.example .env  (then set a strong JWT_SECRET)"; exit 1; }
 	docker compose up --build -d
 
 down:

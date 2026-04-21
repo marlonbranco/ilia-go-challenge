@@ -8,7 +8,7 @@ services:
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U user"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -40,7 +40,7 @@ services:
       - "27017:27017"
     healthcheck:
       test: >
-        echo "try { rs.status() } catch (err) { rs.initiate({_id:'rs0',members:[{_id:0,host:'localhost:27017'}]}) }" |
+        echo "try { rs.status() } catch (err) { rs.initiate({_id:'rs0',members:[{_id:0,host:'wallet-db:27017'}]}) }" |
         mongosh --port 27017 --quiet
       interval: 10s
       timeout: 30s
@@ -57,7 +57,9 @@ services:
     environment:
       - PORT=3001
       - MONGO_URI=mongodb://wallet-db:27017/?replicaSet=rs0
-      - REDIS_URL=redis-wallet:6380
+      - MONGO_DB_NAME=${MONGO_DB_NAME}
+      - MONGO_COLLECTION_PREFIX=${MONGO_COLLECTION_PREFIX}
+      - REDIS_URL=redis-wallet:6379
       - JWT_SECRET=${JWT_SECRET}
       - GRPC_PORT=:50051
       - GRPC_CERT_FILE=/certs/wallet-service.crt
@@ -73,7 +75,7 @@ services:
       redis-wallet:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -101,7 +103,7 @@ services:
     depends_on:
       users-db:
         condition: service_healthy
-      redis:
+      redis-users:
         condition: service_healthy
       wallet-service:
         condition: service_healthy
