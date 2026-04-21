@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"ms-users/internal/domain"
-	
+
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
@@ -63,7 +63,7 @@ const (
 	errFailedToDeleteMsg = "failed to delete user"
 )
 
-func NewPostgresUserRepository(ctx context.Context, connectionUrl string, migrationsUrl string) (*PostgresUserRepository, error) {
+func NewPostgresUserRepository(ctx context.Context, connectionUrl string) (*PostgresUserRepository, error) {
 	config, err := pgxpool.ParseConfig(connectionUrl)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse connection url: %w", err)
@@ -78,16 +78,18 @@ func NewPostgresUserRepository(ctx context.Context, connectionUrl string, migrat
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	migrations, err := migrate.New(migrationsUrl, connectionUrl)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create migrate instance: %w", err)
-	}
-
-	if err := migrations.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		return nil, fmt.Errorf("failed to run migrations: %w", err)
-	}
-
 	return &PostgresUserRepository{pool: pool}, nil
+}
+
+func RunMigrations(dbURL, migrationsURL string) error {
+	m, err := migrate.New(migrationsURL, dbURL)
+	if err != nil {
+		return fmt.Errorf("failed to create migrate instance: %w", err)
+	}
+	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		return fmt.Errorf("failed to run migrations: %w", err)
+	}
+	return nil
 }
 
 func (userRepository *PostgresUserRepository) Close() {
@@ -114,7 +116,7 @@ func (userRepository *PostgresUserRepository) Create(ctx context.Context, user d
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
-	
+
 	if err != nil {
 		var postgresError *pgconn.PgError
 		if errors.As(err, &postgresError) && postgresError.Code == postgresDuplicateKeyErrorCode {
@@ -171,7 +173,7 @@ func (userRepository *PostgresUserRepository) FindByEmail(ctx context.Context, e
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
-	
+
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.User{}, fmt.Errorf(errUserNotFoundMsg, domain.ErrNotFound)
@@ -194,7 +196,7 @@ func (userRepository *PostgresUserRepository) FindByID(ctx context.Context, id u
 		&user.CreatedAt,
 		&user.UpdatedAt,
 	)
-	
+
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.User{}, fmt.Errorf(errUserNotFoundMsg, domain.ErrNotFound)

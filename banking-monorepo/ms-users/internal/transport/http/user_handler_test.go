@@ -4,17 +4,17 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"testing"
-	"strings"
-	"time"
 	"os"
+	"strings"
+	"testing"
+	"time"
 
-	"github.com/google/uuid"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 
 	"ms-users/internal/domain"
-	"ms-users/internal/usecase"
 	transporthttp "ms-users/internal/transport/http"
+	"ms-users/internal/usecase"
 	"pkg/middleware"
 )
 
@@ -22,24 +22,34 @@ type fakeUserRepoForHandler struct {
 	user domain.User
 }
 
-func (repository *fakeUserRepoForHandler) Create(ctx context.Context, user domain.User) (domain.User, error) { return user, nil }
-func (repository *fakeUserRepoForHandler) FindAll(ctx context.Context) ([]domain.User, error) { return []domain.User{repository.user}, nil }
-func (repository *fakeUserRepoForHandler) FindByEmail(ctx context.Context, email string) (domain.User, error) { return repository.user, nil }
-func (repository *fakeUserRepoForHandler) FindByID(ctx context.Context, id uuid.UUID) (domain.User, error) { return repository.user, nil }
-func (repository *fakeUserRepoForHandler) Update(ctx context.Context, user domain.User) error { return nil }
+func (repository *fakeUserRepoForHandler) Create(ctx context.Context, user domain.User) (domain.User, error) {
+	return user, nil
+}
+func (repository *fakeUserRepoForHandler) FindAll(ctx context.Context) ([]domain.User, error) {
+	return []domain.User{repository.user}, nil
+}
+func (repository *fakeUserRepoForHandler) FindByEmail(ctx context.Context, email string) (domain.User, error) {
+	return repository.user, nil
+}
+func (repository *fakeUserRepoForHandler) FindByID(ctx context.Context, id uuid.UUID) (domain.User, error) {
+	return repository.user, nil
+}
+func (repository *fakeUserRepoForHandler) Update(ctx context.Context, user domain.User) error {
+	return nil
+}
 func (repository *fakeUserRepoForHandler) Delete(ctx context.Context, id uuid.UUID) error { return nil }
 
 func TestUserHandlerRoutes(test *testing.T) {
 	os.Setenv("JWT_SECRET", "test_secret")
 	repository := &fakeUserRepoForHandler{
 		user: domain.User{
-			ID: uuid.New(),
+			ID:        uuid.New(),
 			FirstName: "Test",
-			LastName: "Test",
-			Email: "test@example.com",
+			LastName:  "Test",
+			Email:     "test@example.com",
 		},
 	}
-	
+
 	useCase := usecase.NewUserUseCase(repository)
 	handler := transporthttp.NewUserHandler(useCase)
 

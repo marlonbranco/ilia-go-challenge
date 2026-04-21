@@ -8,7 +8,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-
 type User struct {
 	ID           uuid.UUID
 	FirstName    string

@@ -3,8 +3,8 @@ package domain
 import (
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 type TransactionType string
@@ -15,14 +15,14 @@ const (
 )
 
 type Wallet struct {
-	ID        bson.ObjectID
+	ID        string
 	UserID    string
 	Balance   decimal.Decimal
 	UpdatedAt time.Time
 }
 
 type Transaction struct {
-	ID             bson.ObjectID
+	ID             string
 	UserID         string
 	Type           TransactionType
 	Amount         decimal.Decimal
@@ -45,6 +45,10 @@ func NewTransaction(
 		return Transaction{}, ErrInvalidAmount
 	}
 
+	if amount.Exponent() < -2 {
+		return Transaction{}, ErrInvalidPrecision
+	}
+
 	if txType != TransactionTypeCredit && txType != TransactionTypeDebit {
 		return Transaction{}, ErrInvalidType
 	}
@@ -61,7 +65,7 @@ func NewTransaction(
 	}
 
 	return Transaction{
-		ID:             bson.NewObjectID(),
+		ID:             uuid.New().String(),
 		UserID:         userID,
 		Type:           txType,
 		Amount:         amount,

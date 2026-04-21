@@ -16,11 +16,11 @@ import (
 )
 
 type AuthHandler struct {
-	useCase  *usecase.AuthUseCase
+	useCase  usecase.AuthService
 	validate *validator.Validate
 }
 
-func NewAuthHandler(useCase *usecase.AuthUseCase) *AuthHandler {
+func NewAuthHandler(useCase usecase.AuthService) *AuthHandler {
 	return &AuthHandler{
 		useCase:  useCase,
 		validate: validator.New(),
@@ -51,6 +51,7 @@ type logoutRequest struct {
 type tokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
+	Balance      *int64 `json:"balance,omitempty"`
 }
 
 func (handler *AuthHandler) RegisterRoutes(mux *http.ServeMux, jwtMiddleware func(http.Handler) http.Handler) {
@@ -75,7 +76,12 @@ func (handler *AuthHandler) handleRegister(response http.ResponseWriter, request
 		return
 	}
 
-	pair, err := handler.useCase.Register(request.Context(), payload.FirstName, payload.LastName, payload.Email, payload.Password)
+	pair, err := handler.useCase.Register(request.Context(), usecase.RegisterRequest{
+		FirstName: payload.FirstName,
+		LastName:  payload.LastName,
+		Email:     payload.Email,
+		Password:  payload.Password,
+	})
 	if err != nil {
 		handler.handleUseCaseError(response, err, requestID)
 		return
@@ -101,7 +107,10 @@ func (handler *AuthHandler) handleLogin(response http.ResponseWriter, request *h
 		return
 	}
 
-	pair, err := handler.useCase.Login(request.Context(), payload.Email, payload.Password)
+	pair, err := handler.useCase.Login(request.Context(), usecase.LoginRequest{
+		Email:    payload.Email,
+		Password: payload.Password,
+	})
 	if err != nil {
 		handler.handleUseCaseError(response, err, requestID)
 		return
@@ -110,6 +119,7 @@ func (handler *AuthHandler) handleLogin(response http.ResponseWriter, request *h
 	writeJSON(response, http.StatusOK, apiresponse.Success(tokenResponse{
 		AccessToken:  pair.AccessToken,
 		RefreshToken: pair.RefreshToken,
+		Balance:      pair.Balance,
 	}, requestID))
 }
 

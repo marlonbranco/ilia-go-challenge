@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"ms-wallet/internal/domain"
@@ -19,19 +18,20 @@ import (
 )
 
 const (
-	walletsCollection     = "wallets"
+	walletsCollection      = "wallets"
 	transactionsCollection = "transactions"
 
-	errFailedToGetWalletMsg       = "failed to get or create wallet"
+	errFailedToGetWalletMsg         = "failed to get or create wallet"
 	errFailedToCreateTransactionMsg = "failed to create transaction"
-	errFailedToGetBalanceMsg      = "failed to get balance"
-	errFailedToListTransactionsMsg = "failed to list transactions"
-	errDuplicateIdempotencyKeyMsg = "duplicate idempotency key: %w"
-	errTransactionNotFoundMsg     = "transaction not found: %w"
+	errFailedToGetBalanceMsg        = "failed to get balance"
+	errFailedToListTransactionsMsg  = "failed to list transactions"
+	errDuplicateIdempotencyKeyMsg   = "duplicate idempotency key: %w"
+	errTransactionNotFoundMsg       = "transaction not found: %w"
 )
 
 type walletDocument struct {
 	ID        bson.ObjectID `bson:"_id"`
+	DomainID  string        `bson:"domain_id"`
 	UserID    string        `bson:"user_id"`
 	Balance   string        `bson:"balance"`
 	UpdatedAt time.Time     `bson:"updated_at"`
@@ -39,6 +39,7 @@ type walletDocument struct {
 
 type transactionDocument struct {
 	ID             bson.ObjectID `bson:"_id"`
+	DomainID       string        `bson:"domain_id"`
 	UserID         string        `bson:"user_id"`
 	Type           string        `bson:"type"`
 	Amount         string        `bson:"amount"`
@@ -55,7 +56,7 @@ type MongoWalletRepository struct {
 	transactions *mongo.Collection
 }
 
-func NewMongoWalletRepository(ctx context.Context, uri string) (*MongoWalletRepository, error) {
+func NewMongoWalletRepository(ctx context.Context, uri, dbName, collectionPrefix string) (*MongoWalletRepository, error) {
 	opts := options.Client().
 		ApplyURI(uri).
 		SetReadConcern(readconcern.Majority()).
@@ -71,15 +72,13 @@ func NewMongoWalletRepository(ctx context.Context, uri string) (*MongoWalletRepo
 		return nil, fmt.Errorf("mongodb ping failed: %w", err)
 	}
 
-	prefix := os.Getenv("MONGO_COLLECTION_PREFIX")
-	dbName := os.Getenv("MONGO_DB_NAME")
 	if dbName == "" {
 		dbName = "wallet"
 	}
 
 	db := client.Database(dbName)
-	walletsCol := db.Collection(prefix + walletsCollection)
-	transactionsCol := db.Collection(prefix + transactionsCollection)
+	walletsCol := db.Collection(collectionPrefix + walletsCollection)
+	transactionsCol := db.Collection(collectionPrefix + transactionsCollection)
 
 	repo := &MongoWalletRepository{
 		client:       client,
@@ -126,10 +125,12 @@ func (repository *MongoWalletRepository) Close(ctx context.Context) error {
 
 func (repository *MongoWalletRepository) GetOrCreateWallet(ctx context.Context, userID string) (domain.Wallet, error) {
 	now := time.Now().UTC()
+	domainID := newDomainID()
 	filter := bson.D{{Key: "user_id", Value: userID}}
 	update := bson.D{
 		{Key: "$setOnInsert", Value: bson.D{
 			{Key: "_id", Value: bson.NewObjectID()},
+			{Key: "domain_id", Value: domainID},
 			{Key: "user_id", Value: userID},
 			{Key: "balance", Value: "0"},
 			{Key: "updated_at", Value: now},
@@ -267,7 +268,7 @@ func (repository *MongoWalletRepository) FindByIdempotencyKey(ctx context.Contex
 func walletFromDoc(doc walletDocument) domain.Wallet {
 	balance, _ := decimal.NewFromString(doc.Balance)
 	return domain.Wallet{
-		ID:        doc.ID,
+		ID:        doc.DomainID,
 		UserID:    doc.UserID,
 		Balance:   balance,
 		UpdatedAt: doc.UpdatedAt,
@@ -276,7 +277,8 @@ func walletFromDoc(doc walletDocument) domain.Wallet {
 
 func transactionToDoc(tx domain.Transaction) transactionDocument {
 	return transactionDocument{
-		ID:             tx.ID,
+		ID:             bson.NewObjectID(),
+		DomainID:       tx.ID,
 		UserID:         tx.UserID,
 		Type:           string(tx.Type),
 		Amount:         tx.Amount.String(),
@@ -303,7 +305,7 @@ func transactionFromDoc(doc transactionDocument) (domain.Transaction, error) {
 	}
 
 	return domain.Transaction{
-		ID:             doc.ID,
+		ID:             doc.DomainID,
 		UserID:         doc.UserID,
 		Type:           domain.TransactionType(doc.Type),
 		Amount:         amount,
@@ -313,4 +315,9 @@ func transactionFromDoc(doc transactionDocument) (domain.Transaction, error) {
 		Description:    doc.Description,
 		CreatedAt:      doc.CreatedAt,
 	}, nil
+}
+
+func newDomainID() string {
+
+	return bson.NewObjectID().Hex()
 }

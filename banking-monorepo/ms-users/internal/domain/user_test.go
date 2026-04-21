@@ -1,16 +1,16 @@
 package domain_test
 
 import (
-	"testing"
-	"ms-users/internal/domain"
 	"golang.org/x/crypto/bcrypt"
+	"ms-users/internal/domain"
+	"testing"
 )
 
 var (
-	email 			= "test@example.com"
-	firstName 		= "First"
-	lastName 		= "Last"
-	password 		= "securepassword123"
+	email     = "test@example.com"
+	firstName = "First"
+	lastName  = "Last"
+	password  = "securepassword123"
 )
 
 func TestNewUser(test *testing.T) {
@@ -57,11 +57,11 @@ func TestNewUser(test *testing.T) {
 		if user.ID.String() == "00000000-0000-0000-0000-000000000000" {
 			test.Error("expected valid UUID, got empty UUID")
 		}
-		
+
 		if user.CreatedAt.IsZero() {
 			test.Error("expected CreatedAt to be set")
 		}
-		
+
 		if user.UpdatedAt.IsZero() {
 			test.Error("expected UpdatedAt to be set")
 		}

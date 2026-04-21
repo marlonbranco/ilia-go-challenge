@@ -27,11 +27,11 @@ const (
 
 func setupTestDB(test *testing.T) (*userRepository.PostgresUserRepository, func()) {
 	ctx := context.Background()
-	
+
 	dbName := "users_test"
 	dbUser := "user"
 	dbPassword := testPassword
-	
+
 	pgContainer, err := postgres.RunContainer(ctx,
 		testcontainers.WithImage("postgres:15-alpine"),
 		postgres.WithDatabase(dbName),
@@ -57,7 +57,11 @@ func setupTestDB(test *testing.T) (*userRepository.PostgresUserRepository, func(
 		test.Fatalf("failed to get absolute path for migrations: %v", err)
 	}
 
-	repository, err := userRepository.NewPostgresUserRepository(ctx, connectionUrl, "file://"+migrationsDir)
+	if err := userRepository.RunMigrations(connectionUrl, "file://"+migrationsDir); err != nil {
+		test.Fatalf("failed to run migrations: %v", err)
+	}
+
+	repository, err := userRepository.NewPostgresUserRepository(ctx, connectionUrl)
 	if err != nil {
 		test.Fatalf("failed to create repository: %v", err)
 	}
@@ -228,7 +232,7 @@ func TestPostgresUserRepositoryFindAll(test *testing.T) {
 	test.Run("finds all users excluding deleted", func(test *testing.T) {
 		user1, _ := domain.NewUser("First", "Last", "findall1@example.com", testPassword)
 		repository.Create(ctx, user1)
-		
+
 		user2, _ := domain.NewUser("Second", "Last", "findall2@example.com", testPassword)
 		createdUser2, _ := repository.Create(ctx, user2)
 
@@ -242,8 +246,12 @@ func TestPostgresUserRepositoryFindAll(test *testing.T) {
 		foundUser1 := false
 		foundUser2 := false
 		for _, user := range users {
-			if user.Email == "findall1@example.com" { foundUser1 = true }
-			if user.Email == "findall2@example.com" { foundUser2 = true }
+			if user.Email == "findall1@example.com" {
+				foundUser1 = true
+			}
+			if user.Email == "findall2@example.com" {
+				foundUser2 = true
+			}
 		}
 
 		if !foundUser1 {
