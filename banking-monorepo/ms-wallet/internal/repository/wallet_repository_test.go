@@ -18,8 +18,8 @@ import (
 const (
 	mongoImage = "mongo:7"
 
-	errTestExpectedNoErrorMsg  = "expected no error, got %v"
-	errTestExpectedErrMsg      = "expected %v, got %v"
+	errTestExpectedNoErrorMsg = "expected no error, got %v"
+	errTestExpectedErrMsg     = "expected %v, got %v"
 )
 
 func setupTestMongo(test *testing.T) (*walletRepo.MongoWalletRepository, func()) {
@@ -63,10 +63,7 @@ func setupTestMongo(test *testing.T) (*walletRepo.MongoWalletRepository, func())
 
 	uri := fmt.Sprintf("mongodb://%s:%s/?directConnection=true&replicaSet=rs0", host, port.Port())
 
-	test.Setenv("MONGO_DB_NAME", "wallet_test")
-	test.Setenv("MONGO_COLLECTION_PREFIX", "test_")
-
-	repo, err := walletRepo.NewMongoWalletRepository(ctx, uri)
+	repo, err := walletRepo.NewMongoWalletRepository(ctx, uri, "wallet_test", "test_")
 	if err != nil {
 		test.Fatalf("failed to create repository: %v", err)
 	}
@@ -103,8 +100,8 @@ func TestGetOrCreateWallet(test *testing.T) {
 			test.Errorf("expected zero balance, got %s", wallet.Balance)
 		}
 
-		if wallet.ID.IsZero() {
-			test.Error("expected non-zero ObjectID")
+		if wallet.ID == "" {
+			test.Error("expected non-empty wallet ID")
 		}
 	})
 

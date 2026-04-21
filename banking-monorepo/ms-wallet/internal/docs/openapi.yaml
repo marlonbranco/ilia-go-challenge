@@ -1,0 +1,259 @@
+openapi: "3.0.3"
+info:
+  title: ms-wallet
+  version: "1.0.0"
+  description: Wallet and transaction management service.
+
+servers:
+  - url: http://localhost:3001
+    description: Local development
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    RequestError:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        data:
+          nullable: true
+          example: null
+        request_id:
+          type: string
+          example: "01J9Z8X5K3PQRSTVWXYZ123456"
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: "INVALID_AMOUNT"
+            message:
+              type: string
+
+    Transaction:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique transaction ID
+        user_id:
+          type: string
+        type:
+          type: string
+          enum: [CREDIT, DEBIT]
+        amount:
+          type: string
+          description: Decimal amount with up to 2 decimal places
+          example: "50.00"
+        balance_before:
+          type: string
+          example: "100.00"
+        balance_after:
+          type: string
+          example: "150.00"
+        description:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    TransactionEnvelope:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        request_id:
+          type: string
+        error:
+          nullable: true
+          example: null
+        data:
+          $ref: "#/components/schemas/Transaction"
+
+    TransactionsListEnvelope:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        request_id:
+          type: string
+        error:
+          nullable: true
+          example: null
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Transaction"
+
+    BalanceEnvelope:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        request_id:
+          type: string
+        error:
+          nullable: true
+          example: null
+        data:
+          type: object
+          properties:
+            amount:
+              type: string
+              description: Current wallet balance
+              example: "250.00"
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      tags: [Health]
+      responses:
+        "200":
+          description: Service is up
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: OK
+
+  /transactions:
+    post:
+      summary: Create a transaction (CREDIT or DEBIT)
+      tags: [Transactions]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Client-generated UUID to deduplicate requests
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, amount]
+              properties:
+                type:
+                  type: string
+                  enum: [CREDIT, DEBIT]
+                  example: CREDIT
+                amount:
+                  type: string
+                  description: Positive decimal with up to 2 decimal places
+                  example: "50.00"
+                description:
+                  type: string
+                  example: "Initial deposit"
+      responses:
+        "201":
+          description: Transaction created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionEnvelope"
+        "400":
+          description: Missing Idempotency-Key header or invalid body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequestError"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequestError"
+        "409":
+          description: Duplicate idempotency key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequestError"
+        "422":
+          description: Invalid amount, precision, type, or insufficient funds
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequestError"
+
+    get:
+      summary: List transactions for the authenticated user
+      tags: [Transactions]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [CREDIT, DEBIT]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: page
+          in: query
+          schema:
+            type: integer
+            description: 1-based page number (takes precedence over offset)
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            description: Raw row offset (used when page is not provided)
+      responses:
+        "200":
+          description: Transaction list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionsListEnvelope"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequestError"
+
+  /wallet/balance:
+    get:
+      summary: Get wallet balance for the authenticated user
+      tags: [Wallet]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Current balance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BalanceEnvelope"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequestError"
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequestError"

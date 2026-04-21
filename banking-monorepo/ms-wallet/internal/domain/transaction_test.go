@@ -44,8 +44,8 @@ func TestNewTransaction(test *testing.T) {
 			test.Errorf("expected BalanceBefore %s, got %s", testBalance, tx.BalanceBefore)
 		}
 
-		if tx.ID.IsZero() {
-			test.Error("expected non-zero ObjectID")
+		if tx.ID == "" {
+			test.Error("expected non-empty ID")
 		}
 
 		if tx.CreatedAt.IsZero() {
@@ -107,6 +107,30 @@ func TestNewTransaction(test *testing.T) {
 		_, err := domain.NewTransaction(testUserID, domain.TransactionType("INVALID"), decimal.NewFromInt(10), testBalance, testIdempotencyKey, testDescription)
 		if err != domain.ErrInvalidType {
 			test.Errorf("expected ErrInvalidType, got %v", err)
+		}
+	})
+
+	test.Run("amount with 2 decimal places is accepted", func(test *testing.T) {
+		amount, _ := decimal.NewFromString("9.99")
+		_, err := domain.NewTransaction(testUserID, domain.TransactionTypeCredit, amount, testBalance, testIdempotencyKey, testDescription)
+		if err != nil {
+			test.Errorf("expected no error for 2dp amount, got %v", err)
+		}
+	})
+
+	test.Run("amount with 3 decimal places returns ErrInvalidPrecision", func(test *testing.T) {
+		amount, _ := decimal.NewFromString("9.999")
+		_, err := domain.NewTransaction(testUserID, domain.TransactionTypeCredit, amount, testBalance, testIdempotencyKey, testDescription)
+		if err != domain.ErrInvalidPrecision {
+			test.Errorf("expected ErrInvalidPrecision, got %v", err)
+		}
+	})
+
+	test.Run("amount with more than 2 decimal places returns ErrInvalidPrecision", func(test *testing.T) {
+		amount, _ := decimal.NewFromString("1.123456")
+		_, err := domain.NewTransaction(testUserID, domain.TransactionTypeCredit, amount, testBalance, testIdempotencyKey, testDescription)
+		if err != domain.ErrInvalidPrecision {
+			test.Errorf("expected ErrInvalidPrecision, got %v", err)
 		}
 	})
 }

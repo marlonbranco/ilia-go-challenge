@@ -13,7 +13,6 @@ type UserUseCase struct {
 	userRepository domain.UserRepository
 }
 
-
 func NewUserUseCase(userRepository domain.UserRepository) *UserUseCase {
 	return &UserUseCase{
 		userRepository: userRepository,

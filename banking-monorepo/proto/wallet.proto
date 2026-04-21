@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package wallet;
+option go_package = "proto/wallet";
+
+service WalletService {
+  rpc GetBalance (GetBalanceRequest) returns (BalanceResponse);
+  rpc ValidateUser (ValidateUserRequest) returns (ValidateUserResponse);
+}
+
+message GetBalanceRequest {
+  string user_id = 1;
+}
+
+message BalanceResponse {
+  string amount = 1;
+}
+
+message ValidateUserRequest {
+  string user_id = 1;
+}
+
+message ValidateUserResponse {
+  bool is_valid = 1;
+}

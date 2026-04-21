@@ -16,11 +16,11 @@ import (
 )
 
 type UserHandler struct {
-	useCase  *usecase.UserUseCase
+	useCase  usecase.UserService
 	validate *validator.Validate
 }
 
-func NewUserHandler(useCase *usecase.UserUseCase) *UserHandler {
+func NewUserHandler(useCase usecase.UserService) *UserHandler {
 	return &UserHandler{
 		useCase:  useCase,
 		validate: validator.New(),
@@ -110,7 +110,11 @@ func (handler *UserHandler) handlePatch(response http.ResponseWriter, request *h
 		return
 	}
 
-	userID, _ := claims["sub"].(string)
+	userID, ok := claims["sub"].(string)
+	if !ok || userID == "" {
+		writeJSON(response, http.StatusUnauthorized, apiresponse.Error("UNAUTHORIZED", "invalid JWT claims", requestID))
+		return
+	}
 
 	var payload userUpdatePayload
 	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
@@ -155,7 +159,11 @@ func (handler *UserHandler) handleDelete(response http.ResponseWriter, request *
 		return
 	}
 
-	userID, _ := claims["sub"].(string)
+	userID, ok := claims["sub"].(string)
+	if !ok || userID == "" {
+		writeJSON(response, http.StatusUnauthorized, apiresponse.Error("UNAUTHORIZED", "invalid JWT claims", requestID))
+		return
+	}
 
 	err = handler.useCase.Delete(request.Context(), id, userID)
 	if err != nil {
