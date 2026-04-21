@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"ms-users/internal/domain"
+	jwtinfra "ms-users/internal/infra/jwt"
 	"ms-users/internal/repository"
 	"ms-users/internal/usecase"
 
@@ -49,7 +50,11 @@ func setupIntegration(test *testing.T) (*usecase.AuthUseCase, func()) {
 		test.Fatalf("failed to resolve migrations path: %v", err)
 	}
 
-	userRepo, err := repository.NewPostgresUserRepository(ctx, pgConnStr, "file://"+migrationsDir)
+	if err := repository.RunMigrations(pgConnStr, "file://"+migrationsDir); err != nil {
+		test.Fatalf("failed to run migrations: %v", err)
+	}
+
+	userRepo, err := repository.NewPostgresUserRepository(ctx, pgConnStr)
 	if err != nil {
 		test.Fatalf("failed to create user repository: %v", err)
 	}
@@ -62,22 +67,23 @@ func setupIntegration(test *testing.T) (*usecase.AuthUseCase, func()) {
 		),
 	)
 	if err != nil {
-		t.Fatalf("failed to start redis container: %v", err)
+		test.Fatalf("failed to start redis container: %v", err)
 	}
 
 	redisEndpoint, err := redisContainer.Endpoint(ctx, "")
 	if err != nil {
-		t.Fatalf("failed to get redis endpoint: %v", err)
+		test.Fatalf("failed to get redis endpoint: %v", err)
 	}
 
 	redisClient := redis.NewClient(&redis.Options{Addr: redisEndpoint})
 	if err := redisClient.Ping(ctx).Err(); err != nil {
-		t.Fatalf("failed to ping redis: %v", err)
+		test.Fatalf("failed to ping redis: %v", err)
 	}
 
 	tokenStore := repository.NewRedisTokenStore(redisClient)
 
-	useCase := usecase.NewAuthUseCase(userRepo, tokenStore, integrationJWTSecret)
+	tokenSvc := jwtinfra.NewTokenService(integrationJWTSecret, jwtinfra.DefaultAccessTTL, jwtinfra.DefaultRefreshTTL)
+	useCase := usecase.NewAuthUseCase(userRepo, tokenStore, tokenSvc)
 
 	cleanup := func() {
 		userRepo.Close()
@@ -102,7 +108,7 @@ func TestAuthIntegrationFullLifeCycle(test *testing.T) {
 	password := "strongpassword123"
 
 	test.Run("register", func(test *testing.T) {
-		pair, err := useCase.Register(ctx, email, password)
+		pair, err := useCase.Register(ctx, usecase.RegisterRequest{FirstName: "Integration", LastName: "User", Email: email, Password: password})
 		if err != nil {
 			test.Fatalf("Register failed: %v", err)
 		}
@@ -115,7 +121,7 @@ func TestAuthIntegrationFullLifeCycle(test *testing.T) {
 	})
 
 	test.Run("duplicate register", func(test *testing.T) {
-		_, err := useCase.Register(ctx, email, password)
+		_, err := useCase.Register(ctx, usecase.RegisterRequest{FirstName: "Integration", LastName: "User", Email: email, Password: password})
 		if !errors.Is(err, domain.ErrDuplicate) {
 			test.Fatalf("expected ErrDuplicate, got %v", err)
 		}
@@ -124,7 +130,7 @@ func TestAuthIntegrationFullLifeCycle(test *testing.T) {
 	var loginPair domain.TokenPair
 	test.Run("login", func(test *testing.T) {
 		var err error
-		loginPair, err = useCase.Login(ctx, email, password)
+		loginPair, err = useCase.Login(ctx, usecase.LoginRequest{Email: email, Password: password})
 		if err != nil {
 			test.Fatalf("Login failed: %v", err)
 		}
@@ -132,7 +138,7 @@ func TestAuthIntegrationFullLifeCycle(test *testing.T) {
 	})
 
 	test.Run("login wrong password", func(test *testing.T) {
-		_, err := useCase.Login(ctx, email, "wrongpassword")
+		_, err := useCase.Login(ctx, usecase.LoginRequest{Email: email, Password: "wrongpassword"})
 		if !errors.Is(err, domain.ErrInvalidCredentials) {
 			test.Fatalf("expected ErrInvalidCredentials, got %v", err)
 		}
@@ -160,7 +166,7 @@ func TestAuthIntegrationFullLifeCycle(test *testing.T) {
 	})
 
 	test.Run("logout", func(test *testing.T) {
-		claims := parseAccessToken(t, refreshedPair.AccessToken)
+		claims := parseAccessToken(test, refreshedPair.AccessToken)
 		userID := claims["sub"].(string)
 
 		err := useCase.Logout(ctx, userID, refreshedPair.RefreshToken)
@@ -169,7 +175,7 @@ func TestAuthIntegrationFullLifeCycle(test *testing.T) {
 		}
 	})
 
-	test.Run("refresh after logout fails", func(t *testing.T) {
+	test.Run("refresh after logout fails", func(test *testing.T) {
 		_, err := useCase.RefreshToken(ctx, refreshedPair.AccessToken, refreshedPair.RefreshToken)
 		if !errors.Is(err, domain.ErrInvalidToken) {
 			test.Fatalf("expected ErrInvalidToken after logout, got %v", err)

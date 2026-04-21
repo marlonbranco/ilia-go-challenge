@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"ms-users/internal/domain"
+	jwtinfra "ms-users/internal/infra/jwt"
 	"ms-users/internal/usecase"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -16,14 +17,14 @@ import (
 )
 
 const (
-	firstName 					= "First"
-	lastName 					= "Last"
+	firstName = "First"
+	lastName  = "Last"
 
-	errUnexpected 				= "unexpected error: %v"
-	errNilReceived 				= "expected error %v, got nil"
-	errExpectedMessage 			= "expected error %v, got %v"
-	errDuplicateMsg 			= "duplicate: %w"
-	errNotFoundMsg  			= "not found: %w"
+	errUnexpected      = "unexpected error: %v"
+	errNilReceived     = "expected error %v, got nil"
+	errExpectedMessage = "expected error %v, got %v"
+	errDuplicateMsg    = "duplicate: %w"
+	errNotFoundMsg     = "not found: %w"
 )
 
 type fakeUserRepo struct {
@@ -84,7 +85,7 @@ func (repository *fakeUserRepo) Update(_ context.Context, user domain.User) erro
 func (repository *fakeUserRepo) FindAll(_ context.Context) ([]domain.User, error) {
 	repository.mutex.RLock()
 	defer repository.mutex.RUnlock()
-	
+
 	var all []domain.User
 	for _, u := range repository.byID {
 		if !u.IsDeleted {
@@ -97,12 +98,12 @@ func (repository *fakeUserRepo) FindAll(_ context.Context) ([]domain.User, error
 func (repository *fakeUserRepo) Delete(_ context.Context, id uuid.UUID) error {
 	repository.mutex.Lock()
 	defer repository.mutex.Unlock()
-	
+
 	user, ok := repository.byID[id]
 	if !ok || user.IsDeleted {
 		return fmt.Errorf(errNotFoundMsg, domain.ErrNotFound)
 	}
-	
+
 	user.IsDeleted = true
 	repository.byID[id] = user
 	repository.users[user.Email] = user
@@ -152,14 +153,15 @@ func (store *fakeTokenStore) Delete(_ context.Context, userID, tokenID string) e
 const testSecret = "ILIACHALLENGE"
 
 func newTestUseCase(repo domain.UserRepository, store domain.TokenStore) *usecase.AuthUseCase {
-	return usecase.NewAuthUseCase(repo, store, testSecret)
+	tokenSvc := jwtinfra.NewTokenService(testSecret, jwtinfra.DefaultAccessTTL, jwtinfra.DefaultRefreshTTL)
+	return usecase.NewAuthUseCase(repo, store, tokenSvc)
 }
 
 func parseAccessToken(test *testing.T, tokenStr string) jwt.MapClaims {
 	test.Helper()
 	token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf(usecase.ErrUnexpectedSigningMethodMsg, token.Header["alg"])
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
 		return []byte(testSecret), nil
 	})
@@ -218,7 +220,6 @@ func assertTokenPair(test *testing.T, pair domain.TokenPair, expectedEmail strin
 	}
 }
 
-
 func TestRegister(test *testing.T) {
 	tests := []struct {
 		name      string
@@ -265,7 +266,7 @@ func TestRegister(test *testing.T) {
 			}
 			useCase := newTestUseCase(repository, store)
 
-			pair, err := useCase.Register(context.Background(), firstName, lastName, tc.email, tc.password)
+			pair, err := useCase.Register(context.Background(), usecase.RegisterRequest{FirstName: firstName, LastName: lastName, Email: tc.email, Password: tc.password})
 
 			if tc.wantErr != nil {
 				if err == nil {
@@ -285,7 +286,6 @@ func TestRegister(test *testing.T) {
 		})
 	}
 }
-
 
 func TestLogin(test *testing.T) {
 	tests := []struct {
@@ -331,7 +331,7 @@ func TestLogin(test *testing.T) {
 			}
 			useCase := newTestUseCase(repository, store)
 
-			pair, err := useCase.Login(context.Background(), tc.email, tc.password)
+			pair, err := useCase.Login(context.Background(), usecase.LoginRequest{Email: tc.email, Password: tc.password})
 
 			if tc.wantErr != nil {
 				if err == nil {
@@ -355,7 +355,7 @@ func TestLogin(test *testing.T) {
 func TestRefreshToken(test *testing.T) {
 	registerUser := func(test *testing.T, useCase *usecase.AuthUseCase, email, password string) domain.TokenPair {
 		test.Helper()
-		pair, err := useCase.Register(context.Background(), firstName, lastName, email, password)
+		pair, err := useCase.Register(context.Background(), usecase.RegisterRequest{FirstName: firstName, LastName: lastName, Email: email, Password: password})
 		if err != nil {
 			test.Fatalf("failed to register user: %v", err)
 		}
@@ -384,7 +384,7 @@ func TestRefreshToken(test *testing.T) {
 				store := newFakeTokenStore()
 				useCase := newTestUseCase(repository, store)
 				pair := registerUser(test, useCase, "refresh2@example.com", "password")
-				return useCase, pair.AccessToken, uuid.New().String() 
+				return useCase, pair.AccessToken, uuid.New().String()
 			},
 			wantErr: domain.ErrInvalidToken,
 		},
@@ -442,7 +442,7 @@ func TestLogout(test *testing.T) {
 				store := newFakeTokenStore()
 				useCase := newTestUseCase(repository, store)
 
-				pair, err := useCase.Register(context.Background(), firstName, lastName, "logout@example.com", "password")
+				pair, err := useCase.Register(context.Background(), usecase.RegisterRequest{FirstName: firstName, LastName: lastName, Email: "logout@example.com", Password: "password"})
 				if err != nil {
 					test.Fatalf("failed to register: %v", err)
 				}
@@ -491,7 +491,7 @@ func TestLogoutInvalidatesRefreshToken(test *testing.T) {
 	store := newFakeTokenStore()
 	useCase := newTestUseCase(repository, store)
 
-	pair, err := useCase.Register(context.Background(), firstName, lastName, "invalidate@example.com", "password")
+	pair, err := useCase.Register(context.Background(), usecase.RegisterRequest{FirstName: firstName, LastName: lastName, Email: "invalidate@example.com", Password: "password"})
 	if err != nil {
 		test.Fatalf("failed to register: %v", err)
 	}

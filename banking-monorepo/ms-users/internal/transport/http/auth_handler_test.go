@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"ms-users/internal/domain"
+	jwtinfra "ms-users/internal/infra/jwt"
 	transporthttp "ms-users/internal/transport/http"
 	"ms-users/internal/usecase"
 
@@ -76,7 +77,7 @@ func (repository *fakeUserRepo) Update(_ context.Context, user domain.User) erro
 func (repository *fakeUserRepo) FindAll(_ context.Context) ([]domain.User, error) {
 	repository.mutex.RLock()
 	defer repository.mutex.RUnlock()
-	
+
 	var all []domain.User
 	for _, u := range repository.byID {
 		if !u.IsDeleted {
@@ -89,12 +90,12 @@ func (repository *fakeUserRepo) FindAll(_ context.Context) ([]domain.User, error
 func (repository *fakeUserRepo) Delete(_ context.Context, id uuid.UUID) error {
 	repository.mutex.Lock()
 	defer repository.mutex.Unlock()
-	
+
 	user, ok := repository.byID[id]
 	if !ok || user.IsDeleted {
 		return fmt.Errorf("not found: %w", domain.ErrNotFound)
 	}
-	
+
 	user.IsDeleted = true
 	repository.byID[id] = user
 	repository.users[user.Email] = user
@@ -143,7 +144,8 @@ const testSecret = "ILIACHALLENGE"
 func setupHandler() (*transporthttp.AuthHandler, *usecase.AuthUseCase) {
 	repository := newFakeUserRepo()
 	store := newFakeTokenStore()
-	useCase := usecase.NewAuthUseCase(repository, store, testSecret)
+	tokenSvc := jwtinfra.NewTokenService(testSecret, jwtinfra.DefaultAccessTTL, jwtinfra.DefaultRefreshTTL)
+	useCase := usecase.NewAuthUseCase(repository, store, tokenSvc)
 	handler := transporthttp.NewAuthHandler(useCase)
 	return handler, useCase
 }
@@ -279,7 +281,7 @@ func TestHandleLogin(test *testing.T) {
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux, noopJWTMiddleware)
 
-	_, err := useCase.Register(context.Background(), "First", "Last", "login@example.com", "strongpass")
+	_, err := useCase.Register(context.Background(), usecase.RegisterRequest{FirstName: "First", LastName: "Last", Email: "login@example.com", Password: "strongpass"})
 	if err != nil {
 		test.Fatalf("failed to register seed user: %v", err)
 	}
@@ -335,7 +337,7 @@ func TestHandleRefresh(test *testing.T) {
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux, noopJWTMiddleware)
 
-	pair, err := useCase.Register(context.Background(), "First", "Last", "refresh@example.com", "strongpass")
+	pair, err := useCase.Register(context.Background(), usecase.RegisterRequest{FirstName: "First", LastName: "Last", Email: "refresh@example.com", Password: "strongpass"})
 	if err != nil {
 		test.Fatalf("failed to register seed user: %v", err)
 	}

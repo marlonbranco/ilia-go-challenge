@@ -59,3 +59,23 @@ func (useCase *TransactionUseCase) GetBalance(ctx context.Context, userID string
 func (useCase *TransactionUseCase) ListTransactions(ctx context.Context, userID string, filter domain.ListFilter) ([]domain.Transaction, error) {
 	return useCase.walletRepository.ListTransactions(ctx, userID, filter)
 }
+
+func (useCase *TransactionUseCase) Credit(ctx context.Context, userID string, amount decimal.Decimal, idempotencyKey, description string) (domain.Transaction, error) {
+	return useCase.CreateTransaction(ctx, CreateTransactionRequest{
+		UserID:         userID,
+		Type:           domain.TransactionTypeCredit,
+		Amount:         amount,
+		IdempotencyKey: idempotencyKey,
+		Description:    description,
+	})
+}
+
+func (useCase *TransactionUseCase) Debit(ctx context.Context, userID string, amount decimal.Decimal, idempotencyKey, description string) (domain.Transaction, error) {
+	return useCase.CreateTransaction(ctx, CreateTransactionRequest{
+		UserID:         userID,
+		Type:           domain.TransactionTypeDebit,
+		Amount:         amount,
+		IdempotencyKey: idempotencyKey,
+		Description:    description,
+	})
+}

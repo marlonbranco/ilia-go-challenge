@@ -18,11 +18,11 @@ import (
 )
 
 type TransactionHandler struct {
-	useCase  *usecase.TransactionUseCase
+	useCase  usecase.TransactionService
 	validate *validator.Validate
 }
 
-func NewTransactionHandler(useCase *usecase.TransactionUseCase) *TransactionHandler {
+func NewTransactionHandler(useCase usecase.TransactionService) *TransactionHandler {
 	return &TransactionHandler{
 		useCase:  useCase,
 		validate: validator.New(),
@@ -30,49 +30,68 @@ func NewTransactionHandler(useCase *usecase.TransactionUseCase) *TransactionHand
 }
 
 type createTransactionRequest struct {
-	UserID         string `json:"user_id"          validate:"required"`
-	Type           string `json:"type"             validate:"required,oneof=CREDIT DEBIT"`
-	Amount         int64  `json:"amount"           validate:"required,gt=0"`
-	IdempotencyKey string `json:"idempotency_key"  validate:"required"`
-	Description    string `json:"description"`
+	Type        string `json:"type"        validate:"required,oneof=CREDIT DEBIT"`
+	Amount      string `json:"amount"      validate:"required"`
+	Description string `json:"description"`
 }
 
 type transactionResponse struct {
 	ID            string `json:"id"`
 	UserID        string `json:"user_id"`
 	Type          string `json:"type"`
-	Amount        int64  `json:"amount"`
-	BalanceBefore int64  `json:"balance_before"`
-	BalanceAfter  int64  `json:"balance_after"`
+	Amount        string `json:"amount"`
+	BalanceBefore string `json:"balance_before"`
+	BalanceAfter  string `json:"balance_after"`
 	Description   string `json:"description"`
 	CreatedAt     string `json:"created_at"`
 }
 
 type balanceResponse struct {
-	Amount int64 `json:"amount"`
+	Amount string `json:"amount"`
 }
 
 func toTransactionResponse(tx domain.Transaction) transactionResponse {
 	return transactionResponse{
-		ID:            tx.ID.Hex(),
+		ID:            tx.ID,
 		UserID:        tx.UserID,
 		Type:          string(tx.Type),
-		Amount:        tx.Amount.IntPart(),
-		BalanceBefore: tx.BalanceBefore.IntPart(),
-		BalanceAfter:  tx.BalanceAfter.IntPart(),
+		Amount:        tx.Amount.String(),
+		BalanceBefore: tx.BalanceBefore.String(),
+		BalanceAfter:  tx.BalanceAfter.String(),
 		Description:   tx.Description,
 		CreatedAt:     tx.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
 }
 
-func (handler *TransactionHandler) RegisterRoutes(mux *http.ServeMux, jwtMiddleware func(http.Handler) http.Handler) {
-	mux.Handle("POST /transactions", jwtMiddleware(http.HandlerFunc(handler.handleCreate)))
+func (handler *TransactionHandler) RegisterRoutes(
+	mux *http.ServeMux,
+	jwtMiddleware func(http.Handler) http.Handler,
+	idempotencyMiddleware func(http.Handler) http.Handler,
+) {
+	mux.Handle("POST /transactions", jwtMiddleware(idempotencyMiddleware(http.HandlerFunc(handler.handleCreate))))
 	mux.Handle("GET /transactions", jwtMiddleware(http.HandlerFunc(handler.handleList)))
-	mux.Handle("GET /balance", jwtMiddleware(http.HandlerFunc(handler.handleBalance)))
+	mux.Handle("GET /wallet/balance", jwtMiddleware(http.HandlerFunc(handler.handleBalance)))
 }
 
 func (handler *TransactionHandler) handleCreate(response http.ResponseWriter, request *http.Request) {
 	requestID, _ := middleware.GetRequestID(request.Context())
+
+	claims, ok := middleware.GetClaims(request.Context())
+	if !ok {
+		writeJSON(response, http.StatusUnauthorized, apiResponse.Error("UNAUTHORIZED", "missing JWT claims", requestID))
+		return
+	}
+	userID, ok := claims["sub"].(string)
+	if !ok || userID == "" {
+		writeJSON(response, http.StatusUnauthorized, apiResponse.Error("UNAUTHORIZED", "invalid JWT claims", requestID))
+		return
+	}
+
+	idemKey := request.Header.Get("Idempotency-Key")
+	if idemKey == "" {
+		writeJSON(response, http.StatusBadRequest, apiResponse.Error("MISSING_IDEMPOTENCY_KEY", "Idempotency-Key header is required", requestID))
+		return
+	}
 
 	var payload createTransactionRequest
 	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
@@ -85,11 +104,17 @@ func (handler *TransactionHandler) handleCreate(response http.ResponseWriter, re
 		return
 	}
 
+	amount, err := decimal.NewFromString(payload.Amount)
+	if err != nil {
+		writeJSON(response, http.StatusUnprocessableEntity, apiResponse.Error("INVALID_AMOUNT", "amount must be a valid decimal number", requestID))
+		return
+	}
+
 	req := usecase.CreateTransactionRequest{
-		UserID:         payload.UserID,
+		UserID:         userID,
 		Type:           domain.TransactionType(payload.Type),
-		Amount:         decimal.NewFromInt(payload.Amount),
-		IdempotencyKey: payload.IdempotencyKey,
+		Amount:         amount,
+		IdempotencyKey: idemKey,
 		Description:    payload.Description,
 	}
 
@@ -99,7 +124,7 @@ func (handler *TransactionHandler) handleCreate(response http.ResponseWriter, re
 		return
 	}
 
-	writeJSON(response, http.StatusOK, apiResponse.Success(toTransactionResponse(tx), requestID))
+	writeJSON(response, http.StatusCreated, apiResponse.Success(toTransactionResponse(tx), requestID))
 }
 
 func (handler *TransactionHandler) handleList(response http.ResponseWriter, request *http.Request) {
@@ -111,7 +136,11 @@ func (handler *TransactionHandler) handleList(response http.ResponseWriter, requ
 		return
 	}
 
-	userID, _ := claims["sub"].(string)
+	userID, ok := claims["sub"].(string)
+	if !ok || userID == "" {
+		writeJSON(response, http.StatusUnauthorized, apiResponse.Error("UNAUTHORIZED", "invalid JWT claims", requestID))
+		return
+	}
 
 	filter := domain.ListFilter{Limit: 20}
 
@@ -126,7 +155,11 @@ func (handler *TransactionHandler) handleList(response http.ResponseWriter, requ
 		}
 	}
 
-	if offsetParam := request.URL.Query().Get("offset"); offsetParam != "" {
+	if pageParam := request.URL.Query().Get("page"); pageParam != "" {
+		if page, err := strconv.ParseInt(pageParam, 10, 64); err == nil && page > 1 {
+			filter.Offset = (page - 1) * filter.Limit
+		}
+	} else if offsetParam := request.URL.Query().Get("offset"); offsetParam != "" {
 		if o, err := strconv.ParseInt(offsetParam, 10, 64); err == nil && o >= 0 {
 			filter.Offset = o
 		}
@@ -156,7 +189,11 @@ func (handler *TransactionHandler) handleBalance(response http.ResponseWriter, r
 		return
 	}
 
-	userID, _ := claims["sub"].(string)
+	userID, ok := claims["sub"].(string)
+	if !ok || userID == "" {
+		writeJSON(response, http.StatusUnauthorized, apiResponse.Error("UNAUTHORIZED", "invalid JWT claims", requestID))
+		return
+	}
 
 	balance, err := handler.useCase.GetBalance(request.Context(), userID)
 	if err != nil {
@@ -165,13 +202,15 @@ func (handler *TransactionHandler) handleBalance(response http.ResponseWriter, r
 		return
 	}
 
-	writeJSON(response, http.StatusOK, apiResponse.Success(balanceResponse{Amount: balance.IntPart()}, requestID))
+	writeJSON(response, http.StatusOK, apiResponse.Success(balanceResponse{Amount: balance.String()}, requestID))
 }
 
 func (handler *TransactionHandler) handleUseCaseError(response http.ResponseWriter, err error, requestID string) {
 	switch {
 	case errors.Is(err, domain.ErrInvalidAmount):
 		writeJSON(response, http.StatusUnprocessableEntity, apiResponse.Error("INVALID_AMOUNT", err.Error(), requestID))
+	case errors.Is(err, domain.ErrInvalidPrecision):
+		writeJSON(response, http.StatusUnprocessableEntity, apiResponse.Error("INVALID_PRECISION", err.Error(), requestID))
 	case errors.Is(err, domain.ErrInvalidType):
 		writeJSON(response, http.StatusUnprocessableEntity, apiResponse.Error("INVALID_TYPE", err.Error(), requestID))
 	case errors.Is(err, domain.ErrInsufficientFunds):

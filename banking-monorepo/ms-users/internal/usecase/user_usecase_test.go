@@ -2,9 +2,9 @@ package usecase_test
 
 import (
 	"context"
+	"github.com/google/uuid"
 	"strings"
 	"testing"
-	"github.com/google/uuid"
 
 	"ms-users/internal/domain"
 	"ms-users/internal/usecase"
@@ -38,7 +38,7 @@ func TestUserUseCaseUpdate(test *testing.T) {
 		req := usecase.UserUpdateRequest{
 			FirstName: "Updated",
 		}
-		
+
 		updated, err := newUserUseCase.Update(context.Background(), user.ID, user.ID.String(), req)
 		if err != nil {
 			test.Fatalf(errUnexpected, err)
@@ -52,7 +52,7 @@ func TestUserUseCaseUpdate(test *testing.T) {
 		req := usecase.UserUpdateRequest{
 			FirstName: "Hacked",
 		}
-		
+
 		_, err := newUserUseCase.Update(context.Background(), user.ID, uuid.New().String(), req)
 		if err == nil || !strings.Contains(err.Error(), usecase.ErrUnauthorizedUpdateMsg) {
 			test.Fatalf("expected unauthorized error, got %v", err)
