@@ -7,6 +7,9 @@ import (
 	"os"
 	"time"
 
+	"ms-users/internal/docs"
+	usersgrpc "ms-users/internal/grpc"
+	jwtinfra "ms-users/internal/infra/jwt"
 	"ms-users/internal/repository"
 	transportHttp "ms-users/internal/transport/http"
 	"ms-users/internal/usecase"
@@ -38,7 +41,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	userRepo, err := repository.NewPostgresUserRepository(ctx, dbURL, "file://internal/repository/migrations")
+	if err := repository.RunMigrations(dbURL, "file://internal/repository/migrations"); err != nil {
+		slog.Error("Failed to run migrations", "error", err)
+		os.Exit(1)
+	}
+
+	userRepo, err := repository.NewPostgresUserRepository(ctx, dbURL)
 	if err != nil {
 		slog.Error("Failed to initialise user repository", "error", err)
 		os.Exit(1)
@@ -66,10 +74,28 @@ func main() {
 		os.Exit(1)
 	}
 
-	authUseCase := usecase.NewAuthUseCase(userRepo, tokenStore, jwtSecret)
+	tokenSvc := jwtinfra.NewTokenService(jwtSecret, jwtinfra.DefaultAccessTTL, jwtinfra.DefaultRefreshTTL)
+	authUseCase := usecase.NewAuthUseCase(userRepo, tokenStore, tokenSvc)
 	userUseCase := usecase.NewUserUseCase(userRepo)
 
+	if certFile := os.Getenv("GRPC_CERT_FILE"); certFile != "" {
+		walletAddr := os.Getenv("WALLET_GRPC_ADDR")
+		if walletAddr == "" {
+			walletAddr = "localhost:50051"
+		}
+		wc, err := usersgrpc.NewWalletClient(certFile, os.Getenv("GRPC_KEY_FILE"), os.Getenv("GRPC_CA_FILE"), walletAddr)
+		if err != nil {
+			slog.Error("failed to init wallet gRPC client", "error", err)
+			os.Exit(1)
+		}
+		defer wc.Close()
+		authUseCase.WithWalletClient(wc)
+	} else {
+		slog.Warn("GRPC_CERT_FILE not set — wallet balance enrichment disabled")
+	}
+
 	authHandler := transportHttp.NewAuthHandler(authUseCase)
+
 	userHandler := transportHttp.NewUserHandler(userUseCase)
 
 	mux := http.NewServeMux()
@@ -82,8 +108,10 @@ func main() {
 	jwtMiddle := middleware.JWTMiddleware("JWT_SECRET")
 	authHandler.RegisterRoutes(mux, jwtMiddle)
 	userHandler.RegisterRoutes(mux, jwtMiddle)
+	docs.RegisterRoutes(mux)
 
-	loginLimiter := transportHttp.RateLimiter(redisClient, 5, time.Minute)
+	rateLimitCounter := repository.NewRedisRateLimitCounter(redisClient)
+	loginLimiter := transportHttp.RateLimiter(rateLimitCounter, 5, time.Minute)
 
 	var handler http.Handler = mux
 	handler = rateLimitLogin(handler, loginLimiter)
@@ -106,4 +134,3 @@ func rateLimitLogin(next http.Handler, limiter func(http.Handler) http.Handler) 
 		next.ServeHTTP(response, request)
 	})
 }
-

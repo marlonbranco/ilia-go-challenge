@@ -10,8 +10,8 @@ import (
 	"ms-wallet/internal/domain"
 	"ms-wallet/internal/usecase"
 
+	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 const (
@@ -21,7 +21,7 @@ const (
 )
 
 type fakeWalletRepo struct {
-	mutex           sync.RWMutex
+	mutex        sync.RWMutex
 	wallets      map[string]domain.Wallet
 	transactions map[string]domain.Transaction
 	byIdemKey    map[string]domain.Transaction
@@ -42,7 +42,7 @@ func (repository *fakeWalletRepo) GetOrCreateWallet(_ context.Context, userID st
 		return wallet, nil
 	}
 	wallet := domain.Wallet{
-		ID:      bson.NewObjectID(),
+		ID:      uuid.New().String(),
 		UserID:  userID,
 		Balance: decimal.Zero,
 	}
@@ -59,7 +59,7 @@ func (repository *fakeWalletRepo) CreateTransaction(_ context.Context, tx domain
 	wallet := repository.wallets[tx.UserID]
 	wallet.Balance = tx.BalanceAfter
 	repository.wallets[tx.UserID] = wallet
-	repository.transactions[tx.ID.Hex()] = tx
+	repository.transactions[tx.ID] = tx
 	repository.byIdemKey[tx.IdempotencyKey] = tx
 	return tx, nil
 }
@@ -133,8 +133,8 @@ func TestCreateTransaction(test *testing.T) {
 				Description:    "deposit",
 			},
 			check: func(test *testing.T, tx domain.Transaction) {
-				if tx.ID.IsZero() {
-					test.Error("expected non-zero ID")
+				if tx.ID == "" {
+					test.Error("expected non-empty ID")
 				}
 				if !tx.BalanceAfter.Equal(decimal.NewFromInt(100)) {
 					test.Errorf("expected BalanceAfter 100, got %s", tx.BalanceAfter)
@@ -291,7 +291,6 @@ func TestGetBalance(test *testing.T) {
 		ctx := context.Background()
 		userCd := "user-cd"
 
-
 		uc.CreateTransaction(ctx, usecase.CreateTransactionRequest{
 			UserID:         userCd,
 			Type:           domain.TransactionTypeCredit,
@@ -311,6 +310,78 @@ func TestGetBalance(test *testing.T) {
 		}
 		if !balance.Equal(decimal.NewFromInt(300)) {
 			test.Errorf("expected 300, got %s", balance)
+		}
+	})
+}
+
+func TestCredit(test *testing.T) {
+	test.Run("credit convenience method creates CREDIT transaction", func(test *testing.T) {
+		repo := newFakeWalletRepo()
+		uc := usecase.NewTransactionUseCase(repo)
+
+		tx, err := uc.Credit(context.Background(), "user-credit", decimal.NewFromInt(50), "credit-key-1", "salary")
+		if err != nil {
+			test.Fatalf(errUnexpected, err)
+		}
+		if tx.Type != domain.TransactionTypeCredit {
+			test.Errorf("expected CREDIT, got %s", tx.Type)
+		}
+		if !tx.Amount.Equal(decimal.NewFromInt(50)) {
+			test.Errorf("expected amount 50, got %s", tx.Amount)
+		}
+	})
+
+	test.Run("credit rejects amount with more than 2 decimal places", func(test *testing.T) {
+		repo := newFakeWalletRepo()
+		uc := usecase.NewTransactionUseCase(repo)
+		amount, _ := decimal.NewFromString("10.999")
+
+		_, err := uc.Credit(context.Background(), "user-prec", amount, "prec-key-1", "")
+		if !errors.Is(err, domain.ErrInvalidPrecision) {
+			test.Errorf("expected ErrInvalidPrecision, got %v", err)
+		}
+	})
+}
+
+func TestDebit(test *testing.T) {
+	test.Run("debit convenience method creates DEBIT transaction", func(test *testing.T) {
+		repo := newFakeWalletRepo()
+		uc := usecase.NewTransactionUseCase(repo)
+		ctx := context.Background()
+
+		uc.Credit(ctx, "user-d2", decimal.NewFromInt(200), "d2-seed", "")
+
+		tx, err := uc.Debit(ctx, "user-d2", decimal.NewFromInt(75), "d2-debit-1", "rent")
+		if err != nil {
+			test.Fatalf(errUnexpected, err)
+		}
+		if tx.Type != domain.TransactionTypeDebit {
+			test.Errorf("expected DEBIT, got %s", tx.Type)
+		}
+		expected := decimal.NewFromInt(125)
+		if !tx.BalanceAfter.Equal(expected) {
+			test.Errorf("expected BalanceAfter 125, got %s", tx.BalanceAfter)
+		}
+	})
+
+	test.Run("debit returns ErrInsufficientFunds when balance is too low", func(test *testing.T) {
+		repo := newFakeWalletRepo()
+		uc := usecase.NewTransactionUseCase(repo)
+
+		_, err := uc.Debit(context.Background(), "user-broke2", decimal.NewFromInt(100), "broke-key-1", "")
+		if !errors.Is(err, domain.ErrInsufficientFunds) {
+			test.Errorf("expected ErrInsufficientFunds, got %v", err)
+		}
+	})
+
+	test.Run("debit rejects amount with more than 2 decimal places", func(test *testing.T) {
+		repo := newFakeWalletRepo()
+		uc := usecase.NewTransactionUseCase(repo)
+		amount, _ := decimal.NewFromString("5.555")
+
+		_, err := uc.Debit(context.Background(), "user-prec2", amount, "prec-key-2", "")
+		if !errors.Is(err, domain.ErrInvalidPrecision) {
+			test.Errorf("expected ErrInvalidPrecision, got %v", err)
 		}
 	})
 }
@@ -393,7 +464,6 @@ func TestListTransactions(test *testing.T) {
 		uc := usecase.NewTransactionUseCase(repo)
 		ctx := context.Background()
 		userA := "user-a"
-
 
 		uc.CreateTransaction(ctx, usecase.CreateTransactionRequest{
 			UserID: userA, Type: domain.TransactionTypeCredit,

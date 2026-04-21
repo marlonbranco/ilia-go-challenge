@@ -5,30 +5,31 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	"ms-users/internal/domain"
+
 	"pkg/middleware"
 )
 
-func RateLimiter(client *redis.Client, limit int, window time.Duration) func(http.Handler) http.Handler {
+func RateLimiter(counter domain.RateLimitCounter, limit int, window time.Duration) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 			ip := request.RemoteAddr
 			key := "rate_limit:" + request.URL.Path + ":" + ip
 
-			count, err := client.Incr(request.Context(), key).Result()
+			count, err := counter.Increment(request.Context(), key)
 			if err != nil {
 				next.ServeHTTP(response, request)
 				return
 			}
 
 			if count == 1 {
-				client.Expire(request.Context(), key, window)
+				counter.Expire(request.Context(), key, window)
 			}
 
 			if count > int64(limit) {
 				response.Header().Set("Content-Type", "application/json")
 				response.WriteHeader(http.StatusTooManyRequests)
-				
+
 				requestID, _ := middleware.GetRequestID(request.Context())
 				payload := map[string]interface{}{
 					"error": map[string]string{
