@@ -12,7 +12,7 @@ Two Go microservices communicating over mTLS gRPC.
 ## Prerequisites
 
 - Docker + Docker Compose
-- Go 1.22+
+- Go 1.25+
 - OpenSSL (for certificate generation)
 - `protoc` + plugins (only needed if you change `proto/wallet.proto`)
 
