@@ -2,10 +2,10 @@
 
 Two Go microservices communicating over mTLS gRPC.
 
-| Service | Port | Docs |
-|---------|------|------|
-| ms-users | 3002 | http://localhost:3002/docs |
-| ms-wallet | 3001 | http://localhost:3001/docs |
+| Service | Port | Docs | README |
+|---------|------|------|--------|
+| ms-users | 3002 | http://localhost:3002/docs | [ms-users/README.md](ms-users/README.md) |
+| ms-wallet | 3001 | http://localhost:3001/docs | [ms-wallet/README.md](ms-wallet/README.md) |
 
 ---
 
