@@ -3,7 +3,6 @@ package domain
 import (
 	"context"
 	"errors"
-	"time"
 
 	"github.com/shopspring/decimal"
 )
@@ -11,6 +10,7 @@ import (
 var (
 	ErrNotFound          = errors.New("not found")
 	ErrDuplicate         = errors.New("duplicate idempotency key")
+	ErrConflict          = errors.New("concurrent modification: balance changed")
 	ErrInvalidAmount     = errors.New("amount must be greater than zero")
 	ErrInvalidType       = errors.New("transaction type must be CREDIT or DEBIT")
 	ErrInsufficientFunds = errors.New("insufficient funds: debit would produce negative balance")
@@ -31,8 +31,3 @@ type WalletRepository interface {
 	FindByIdempotencyKey(ctx context.Context, key string) (Transaction, error)
 }
 
-type IdempotencyStore interface {
-	SetNX(ctx context.Context, key, value string, ttl time.Duration) (bool, error)
-	Set(ctx context.Context, key, value string, ttl time.Duration) error
-	Get(ctx context.Context, key string) (string, error)
-}

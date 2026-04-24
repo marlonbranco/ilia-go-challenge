@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"ms-wallet/internal/domain"
 	"ms-wallet/internal/usecase"
@@ -54,9 +56,12 @@ func (repository *fakeWalletRepo) CreateTransaction(_ context.Context, tx domain
 	repository.mutex.Lock()
 	defer repository.mutex.Unlock()
 	if _, exists := repository.byIdemKey[tx.IdempotencyKey]; exists {
-		return domain.Transaction{}, fmt.Errorf("duplicate: %wallet", domain.ErrDuplicate)
+		return domain.Transaction{}, fmt.Errorf("duplicate: %w", domain.ErrDuplicate)
 	}
 	wallet := repository.wallets[tx.UserID]
+	if !wallet.Balance.Equal(tx.BalanceBefore) {
+		return domain.Transaction{}, fmt.Errorf("balance conflict: %w", domain.ErrConflict)
+	}
 	wallet.Balance = tx.BalanceAfter
 	repository.wallets[tx.UserID] = wallet
 	repository.transactions[tx.ID] = tx
@@ -69,7 +74,7 @@ func (repository *fakeWalletRepo) GetBalance(_ context.Context, userID string) (
 	defer repository.mutex.RUnlock()
 	wallet, ok := repository.wallets[userID]
 	if !ok {
-		return decimal.Zero, fmt.Errorf("not found: %wallet", domain.ErrNotFound)
+		return decimal.Zero, fmt.Errorf("not found: %w", domain.ErrNotFound)
 	}
 	return wallet.Balance, nil
 }
@@ -107,7 +112,7 @@ func (repository *fakeWalletRepo) FindByIdempotencyKey(_ context.Context, key st
 	defer repository.mutex.RUnlock()
 	tx, ok := repository.byIdemKey[key]
 	if !ok {
-		return domain.Transaction{}, fmt.Errorf("not found: %wallet", domain.ErrNotFound)
+		return domain.Transaction{}, fmt.Errorf("not found: %w", domain.ErrNotFound)
 	}
 	return tx, nil
 }
@@ -483,6 +488,382 @@ func TestListTransactions(test *testing.T) {
 		}
 		if txs[0].UserID != userA {
 			test.Errorf("got transaction belonging to wrong user: %s", txs[0].UserID)
+		}
+	})
+}
+
+type idempotencyRaceRepo struct {
+	*fakeWalletRepo
+	lookupCount  atomic.Int64
+	precommitted domain.Transaction
+}
+
+func (r *idempotencyRaceRepo) FindByIdempotencyKey(_ context.Context, key string) (domain.Transaction, error) {
+	if r.lookupCount.Add(1) == 1 {
+		return domain.Transaction{}, fmt.Errorf("not found: %w", domain.ErrNotFound)
+	}
+	if key == r.precommitted.IdempotencyKey {
+		return r.precommitted, nil
+	}
+	return domain.Transaction{}, fmt.Errorf("not found: %w", domain.ErrNotFound)
+}
+
+func (r *idempotencyRaceRepo) CreateTransaction(_ context.Context, _ domain.Transaction) (domain.Transaction, error) {
+	return domain.Transaction{}, fmt.Errorf("duplicate: %w", domain.ErrDuplicate)
+}
+
+func TestIdempotencyRaceFallback(test *testing.T) {
+	test.Run("ErrDuplicate falls back to FindByIdempotencyKey and returns committed transaction", func(test *testing.T) {
+		committed, _ := domain.NewTransaction("user-race", domain.TransactionTypeCredit, decimal.NewFromInt(100), decimal.Zero, "race-key-1", "race deposit")
+
+		repo := &idempotencyRaceRepo{
+			fakeWalletRepo: newFakeWalletRepo(),
+			precommitted:   committed,
+		}
+		uc := usecase.NewTransactionUseCase(repo)
+
+		tx, err := uc.CreateTransaction(context.Background(), usecase.CreateTransactionRequest{
+			UserID:         "user-race",
+			Type:           domain.TransactionTypeCredit,
+			Amount:         decimal.NewFromInt(100),
+			IdempotencyKey: "race-key-1",
+		})
+		if err != nil {
+			test.Fatalf("expected committed transaction via fallback, got error: %v", err)
+		}
+		if tx.ID != committed.ID {
+			test.Errorf("expected committed tx ID %s, got %s", committed.ID, tx.ID)
+		}
+	})
+}
+
+type alwaysConflictRepo struct{ *fakeWalletRepo }
+
+func (r *alwaysConflictRepo) CreateTransaction(_ context.Context, _ domain.Transaction) (domain.Transaction, error) {
+	return domain.Transaction{}, fmt.Errorf("injected: %w", domain.ErrConflict)
+}
+
+type conflictOnceRepo struct {
+	*fakeWalletRepo
+	fired atomic.Bool
+}
+
+type conflictThenDrainRepo struct {
+	*fakeWalletRepo
+	fired   atomic.Bool
+	drainTo decimal.Decimal
+}
+
+func (r *conflictThenDrainRepo) CreateTransaction(ctx context.Context, tx domain.Transaction) (domain.Transaction, error) {
+	if r.fired.CompareAndSwap(false, true) {
+		r.fakeWalletRepo.mutex.Lock()
+		if wallet, ok := r.fakeWalletRepo.wallets[tx.UserID]; ok {
+			wallet.Balance = r.drainTo
+			r.fakeWalletRepo.wallets[tx.UserID] = wallet
+		}
+		r.fakeWalletRepo.mutex.Unlock()
+		return domain.Transaction{}, fmt.Errorf("injected: %w", domain.ErrConflict)
+	}
+	return r.fakeWalletRepo.CreateTransaction(ctx, tx)
+}
+
+func (r *conflictOnceRepo) CreateTransaction(ctx context.Context, tx domain.Transaction) (domain.Transaction, error) {
+	if r.fired.CompareAndSwap(false, true) {
+		return domain.Transaction{}, fmt.Errorf("injected: %w", domain.ErrConflict)
+	}
+	return r.fakeWalletRepo.CreateTransaction(ctx, tx)
+}
+
+func TestConcurrentDebitInsufficientFundsOnRetry(test *testing.T) {
+	test.Run("retry after conflict fails with ErrInsufficientFunds when concurrent debit drained balance", func(test *testing.T) {
+		repo := newFakeWalletRepo()
+		ctx := context.Background()
+
+		repo.GetOrCreateWallet(ctx, "user-drain")
+		seed, _ := domain.NewTransaction("user-drain", domain.TransactionTypeCredit, decimal.NewFromInt(100), decimal.Zero, "seed-drain", "")
+		repo.CreateTransaction(ctx, seed)
+
+		drainRepo := &conflictThenDrainRepo{
+			fakeWalletRepo: repo,
+			drainTo:        decimal.NewFromInt(20),
+		}
+		uc := usecase.NewTransactionUseCase(drainRepo)
+
+		_, err := uc.Debit(ctx, "user-drain", decimal.NewFromInt(80), "drain-key-1", "")
+		if !errors.Is(err, domain.ErrInsufficientFunds) {
+			test.Fatalf("expected ErrInsufficientFunds after drained balance, got: %v", err)
+		}
+	})
+}
+
+func TestCreateTransactionRetryOnConflict(test *testing.T) {
+	test.Run("retries and succeeds after one ErrConflict", func(test *testing.T) {
+		repo := &conflictOnceRepo{fakeWalletRepo: newFakeWalletRepo()}
+		uc := usecase.NewTransactionUseCase(repo)
+
+		tx, err := uc.CreateTransaction(context.Background(), usecase.CreateTransactionRequest{
+			UserID:         "user-retry",
+			Type:           domain.TransactionTypeCredit,
+			Amount:         decimal.NewFromInt(100),
+			IdempotencyKey: "retry-key-1",
+		})
+		if err != nil {
+			test.Fatalf(errUnexpected, err)
+		}
+		if !tx.BalanceAfter.Equal(decimal.NewFromInt(100)) {
+			test.Errorf("expected BalanceAfter 100, got %s", tx.BalanceAfter)
+		}
+	})
+}
+
+func TestConcurrentCredits(test *testing.T) {
+	test.Run("concurrent credits produce correct final balance", func(test *testing.T) {
+		repo := newFakeWalletRepo()
+		uc := usecase.NewTransactionUseCase(repo)
+		ctx := context.Background()
+
+		const goroutines = 10
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+		for i := range goroutines {
+			go func(i int) {
+				defer wg.Done()
+				_, err := uc.CreateTransaction(ctx, usecase.CreateTransactionRequest{
+					UserID:         "user-concurrent",
+					Type:           domain.TransactionTypeCredit,
+					Amount:         decimal.NewFromInt(10),
+					IdempotencyKey: fmt.Sprintf("concurrent-key-%d", i),
+				})
+				if err != nil {
+					test.Errorf("goroutine %d: %v", i, err)
+				}
+			}(i)
+		}
+		wg.Wait()
+
+		balance, err := uc.GetBalance(ctx, "user-concurrent")
+		if err != nil {
+			test.Fatalf(errUnexpected, err)
+		}
+		expected := decimal.NewFromInt(int64(goroutines) * 10)
+		if !balance.Equal(expected) {
+			test.Errorf("expected balance %s, got %s", expected, balance)
+		}
+	})
+}
+
+func TestHardCapExhaustedReturnsErrConflict(test *testing.T) {
+	test.Run("returns ErrConflict after maxConflictRetries without hanging", func(test *testing.T) {
+		repo := &alwaysConflictRepo{fakeWalletRepo: newFakeWalletRepo()}
+		uc := usecase.NewTransactionUseCase(repo)
+
+		_, err := uc.CreateTransaction(context.Background(), usecase.CreateTransactionRequest{
+			UserID:         "user-cap",
+			Type:           domain.TransactionTypeCredit,
+			Amount:         decimal.NewFromInt(10),
+			IdempotencyKey: uuid.New().String(),
+		})
+		if !errors.Is(err, domain.ErrConflict) {
+			test.Fatalf("expected ErrConflict after cap exhaustion, got: %v", err)
+		}
+	})
+}
+
+func TestContextCancelledExitsRetryLoop(test *testing.T) {
+	test.Run("already-cancelled context returns context.Canceled immediately", func(test *testing.T) {
+		repo := &alwaysConflictRepo{fakeWalletRepo: newFakeWalletRepo()}
+		uc := usecase.NewTransactionUseCase(repo)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		_, err := uc.CreateTransaction(ctx, usecase.CreateTransactionRequest{
+			UserID:         "user-cancel",
+			Type:           domain.TransactionTypeCredit,
+			Amount:         decimal.NewFromInt(10),
+			IdempotencyKey: uuid.New().String(),
+		})
+		if !errors.Is(err, context.Canceled) {
+			test.Fatalf("expected context.Canceled, got: %v", err)
+		}
+	})
+
+	test.Run("deadline exceeded during retries returns context.DeadlineExceeded", func(test *testing.T) {
+		repo := &alwaysConflictRepo{fakeWalletRepo: newFakeWalletRepo()}
+		uc := usecase.NewTransactionUseCase(repo)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+		defer cancel()
+
+		_, err := uc.CreateTransaction(ctx, usecase.CreateTransactionRequest{
+			UserID:         "user-deadline",
+			Type:           domain.TransactionTypeCredit,
+			Amount:         decimal.NewFromInt(10),
+			IdempotencyKey: uuid.New().String(),
+		})
+		if !errors.Is(err, context.DeadlineExceeded) {
+			test.Fatalf("expected context.DeadlineExceeded, got: %v", err)
+		}
+	})
+}
+
+func TestHighConcurrencyAllWritesSucceed(test *testing.T) {
+	test.Run("50 concurrent credits all commit without any lost update", func(test *testing.T) {
+		const goroutines = 50
+		repo := newFakeWalletRepo()
+		uc := usecase.NewTransactionUseCase(repo)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		barrier := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+		for i := range goroutines {
+			go func(i int) {
+				defer wg.Done()
+				<-barrier
+				_, err := uc.CreateTransaction(ctx, usecase.CreateTransactionRequest{
+					UserID:         "user-hc",
+					Type:           domain.TransactionTypeCredit,
+					Amount:         decimal.NewFromInt(10),
+					IdempotencyKey: fmt.Sprintf("hc-key-%d", i),
+				})
+				if err != nil {
+					test.Errorf("goroutine %d: %v", i, err)
+				}
+			}(i)
+		}
+		close(barrier)
+		wg.Wait()
+
+		balance, err := uc.GetBalance(ctx, "user-hc")
+		if err != nil {
+			test.Fatalf(errUnexpected, err)
+		}
+		expected := decimal.NewFromInt(goroutines * 10)
+		if !balance.Equal(expected) {
+			test.Errorf("expected %s, got %s — lost update detected", expected, balance)
+		}
+	})
+}
+
+func TestConcurrentDecimalTransactions(test *testing.T) {
+	test.Run("concurrent credits with decimal amounts produce exact balance", func(test *testing.T) {
+		const goroutines = 40
+		amount, _ := decimal.NewFromString("10.25")
+		expected := amount.Mul(decimal.NewFromInt(goroutines))
+
+		repo := newFakeWalletRepo()
+		uc := usecase.NewTransactionUseCase(repo)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		barrier := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+		for i := range goroutines {
+			go func(i int) {
+				defer wg.Done()
+				<-barrier
+				_, err := uc.CreateTransaction(ctx, usecase.CreateTransactionRequest{
+					UserID:         "user-dec-credit",
+					Type:           domain.TransactionTypeCredit,
+					Amount:         amount,
+					IdempotencyKey: fmt.Sprintf("dec-credit-%d", i),
+				})
+				if err != nil {
+					test.Errorf("goroutine %d: %v", i, err)
+				}
+			}(i)
+		}
+		close(barrier)
+		wg.Wait()
+
+		balance, err := uc.GetBalance(ctx, "user-dec-credit")
+		if err != nil {
+			test.Fatalf(errUnexpected, err)
+		}
+		if !balance.Equal(expected) {
+			test.Errorf("expected %s, got %s — decimal precision lost under concurrency", expected, balance)
+		}
+	})
+
+	test.Run("concurrent mixed credit/debit with decimals produces exact balance", func(test *testing.T) {
+		const half = 20
+		creditAmt, _ := decimal.NewFromString("5.50")
+		debitAmt, _ := decimal.NewFromString("3.25")
+		seed, _ := decimal.NewFromString("200.00")
+		expected := seed.
+			Add(creditAmt.Mul(decimal.NewFromInt(half))).
+			Sub(debitAmt.Mul(decimal.NewFromInt(half)))
+
+		repo := newFakeWalletRepo()
+		uc := usecase.NewTransactionUseCase(repo)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		// Seed the wallet.
+		_, err := uc.Credit(ctx, "user-dec-mixed", seed, "seed-mixed", "")
+		if err != nil {
+			test.Fatalf("seed: %v", err)
+		}
+
+		barrier := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(half * 2)
+		for i := range half {
+			go func(i int) {
+				defer wg.Done()
+				<-barrier
+				_, err := uc.Credit(ctx, "user-dec-mixed", creditAmt, fmt.Sprintf("mixed-credit-%d", i), "")
+				if err != nil {
+					test.Errorf("credit goroutine %d: %v", i, err)
+				}
+			}(i)
+			go func(i int) {
+				defer wg.Done()
+				<-barrier
+				_, err := uc.Debit(ctx, "user-dec-mixed", debitAmt, fmt.Sprintf("mixed-debit-%d", i), "")
+				if err != nil {
+					test.Errorf("debit goroutine %d: %v", i, err)
+				}
+			}(i)
+		}
+		close(barrier)
+		wg.Wait()
+
+		balance, err := uc.GetBalance(ctx, "user-dec-mixed")
+		if err != nil {
+			test.Fatalf(errUnexpected, err)
+		}
+		if !balance.Equal(expected) {
+			test.Errorf("expected %s, got %s — decimal precision lost under concurrency", expected, balance)
+		}
+	})
+
+	test.Run("OCC filter handles decimal string normalisation correctly", func(test *testing.T) {
+		// Verifies that amounts like "10.50" and "10.5" normalise to the same
+		// decimal value and never cause a spurious conflict on retry.
+		repo := newFakeWalletRepo()
+		uc := usecase.NewTransactionUseCase(repo)
+		ctx := context.Background()
+
+		for i, raw := range []string{"10.50", "10.5", "10.50"} {
+			amt, _ := decimal.NewFromString(raw)
+			_, err := uc.Credit(ctx, "user-norm", amt, fmt.Sprintf("norm-key-%d", i), "")
+			if err != nil {
+				test.Fatalf("credit %q: %v", raw, err)
+			}
+		}
+
+		balance, err := uc.GetBalance(ctx, "user-norm")
+		if err != nil {
+			test.Fatalf(errUnexpected, err)
+		}
+		expected, _ := decimal.NewFromString("31.50")
+		if !balance.Equal(expected) {
+			test.Errorf("expected %s, got %s", expected, balance)
 		}
 	})
 }

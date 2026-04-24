@@ -274,6 +274,47 @@ func TestListTransactions(test *testing.T) {
 	})
 }
 
+func TestCreateTransactionOCCConflict(test *testing.T) {
+	repo, cleanup := setupTestMongo(test)
+	test.Cleanup(cleanup)
+
+	ctx := context.Background()
+	userID := "user-occ-1"
+
+	_, err := repo.GetOrCreateWallet(ctx, userID)
+	if err != nil {
+		test.Fatalf("setup: %v", err)
+	}
+
+	seed, _ := domain.NewTransaction(userID, domain.TransactionTypeCredit, decimal.NewFromInt(100), decimal.Zero, "occ-seed", "")
+	if _, err := repo.CreateTransaction(ctx, seed); err != nil {
+		test.Fatalf("seed: %v", err)
+	}
+
+	test.Run("returns ErrConflict when BalanceBefore does not match stored balance", func(test *testing.T) {
+		stale, _ := domain.NewTransaction(userID, domain.TransactionTypeCredit, decimal.NewFromInt(50), decimal.NewFromInt(999), "occ-stale", "")
+		_, err := repo.CreateTransaction(ctx, stale)
+		if !errors.Is(err, domain.ErrConflict) {
+			test.Errorf("expected ErrConflict, got: %v", err)
+		}
+	})
+
+	test.Run("debit with correct BalanceBefore commits and updates balance", func(test *testing.T) {
+		debit, _ := domain.NewTransaction(userID, domain.TransactionTypeDebit, decimal.NewFromInt(40), decimal.NewFromInt(100), "occ-debit", "")
+		if _, err := repo.CreateTransaction(ctx, debit); err != nil {
+			test.Fatalf(errTestExpectedNoErrorMsg, err)
+		}
+
+		balance, err := repo.GetBalance(ctx, userID)
+		if err != nil {
+			test.Fatalf("get balance: %v", err)
+		}
+		if !balance.Equal(decimal.NewFromInt(60)) {
+			test.Errorf("expected 60, got %s", balance)
+		}
+	})
+}
+
 func TestFindByIdempotencyKey(test *testing.T) {
 	repo, cleanup := setupTestMongo(test)
 	test.Cleanup(cleanup)

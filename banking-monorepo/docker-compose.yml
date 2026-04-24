@@ -23,16 +23,6 @@ services:
       timeout: 5s
       retries: 5
 
-  redis-wallet:
-    image: redis:7
-    ports:
-      - "6380:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   wallet-db:
     image: mongo:latest
     command: ["--replSet", "rs0", "--bind_ip_all", "--port", "27017"]
@@ -59,7 +49,6 @@ services:
       - MONGO_URI=mongodb://wallet-db:27017/?replicaSet=rs0
       - MONGO_DB_NAME=${MONGO_DB_NAME}
       - MONGO_COLLECTION_PREFIX=${MONGO_COLLECTION_PREFIX}
-      - REDIS_URL=redis-wallet:6379
       - JWT_SECRET=${JWT_SECRET}
       - GRPC_PORT=:50051
       - GRPC_CERT_FILE=/certs/wallet-service.crt
@@ -71,8 +60,6 @@ services:
       - ./certs/ca.crt:/certs/ca.crt:ro
     depends_on:
       wallet-db:
-        condition: service_healthy
-      redis-wallet:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3001/health || exit 1"]
