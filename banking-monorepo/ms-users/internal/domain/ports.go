@@ -33,7 +33,7 @@ type TokenStore interface {
 }
 
 type WalletClient interface {
-	GetBalance(ctx context.Context, userID string) (int64, error)
+	GetBalance(ctx context.Context, userID string) (string, error)
 	ValidateUser(ctx context.Context, userID string) (bool, error)
 	Close() error
 }

@@ -49,9 +49,9 @@ type logoutRequest struct {
 }
 
 type tokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	Balance      *int64 `json:"balance,omitempty"`
+	AccessToken  string  `json:"access_token"`
+	RefreshToken string  `json:"refresh_token"`
+	Balance      *string `json:"balance,omitempty"`
 }
 
 func (handler *AuthHandler) RegisterRoutes(mux *http.ServeMux, jwtMiddleware func(http.Handler) http.Handler) {

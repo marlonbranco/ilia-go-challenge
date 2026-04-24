@@ -54,23 +54,22 @@ func dial(target string, creds credentials.TransportCredentials, extra ...grpc.D
 	return &grpcWalletClient{conn: conn, client: walletpb.NewWalletServiceClient(conn)}, nil
 }
 
-func (c *grpcWalletClient) GetBalance(ctx context.Context, userID string) (int64, error) {
+func (c *grpcWalletClient) GetBalance(ctx context.Context, userID string) (string, error) {
 	for i := 0; ; i++ {
 		resp, err := c.client.GetBalance(ctx, &walletpb.GetBalanceRequest{UserId: userID})
 		if err == nil {
-			d, err := decimal.NewFromString(resp.Amount)
-			if err != nil {
-				return 0, fmt.Errorf("invalid balance amount %q: %w", resp.Amount, err)
+			if _, err := decimal.NewFromString(resp.Amount); err != nil {
+				return "", fmt.Errorf("invalid balance amount %q: %w", resp.Amount, err)
 			}
-			return d.IntPart(), nil
+			return resp.Amount, nil
 		}
 		if !isRetryable(err) || i >= len(retryDelays) {
-			return 0, err
+			return "", err
 		}
 		select {
 		case <-time.After(retryDelays[i]):
 		case <-ctx.Done():
-			return 0, ctx.Err()
+			return "", ctx.Err()
 		}
 	}
 }
