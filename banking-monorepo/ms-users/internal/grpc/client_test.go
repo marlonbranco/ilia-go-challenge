@@ -102,7 +102,24 @@ func (m *mockWalletGRPC) ValidateUser(_ context.Context, _ *walletpb.ValidateUse
 	return &walletpb.ValidateUserResponse{IsValid: true}, nil
 }
 
+type mockWalletGRPCDecimal struct {
+	walletpb.UnimplementedWalletServiceServer
+	amount string
+}
+
+func (m *mockWalletGRPCDecimal) GetBalance(_ context.Context, _ *walletpb.GetBalanceRequest) (*walletpb.BalanceResponse, error) {
+	return &walletpb.BalanceResponse{Amount: m.amount}, nil
+}
+func (m *mockWalletGRPCDecimal) ValidateUser(_ context.Context, _ *walletpb.ValidateUserRequest) (*walletpb.ValidateUserResponse, error) {
+	return &walletpb.ValidateUserResponse{IsValid: true}, nil
+}
+
 func launchMockWalletServer(t *testing.T, pki *testPKI, mock *mockWalletGRPC) *bufconn.Listener {
+	t.Helper()
+	return launchWalletServer(t, pki, mock)
+}
+
+func launchWalletServer(t *testing.T, pki *testPKI, svc walletpb.WalletServiceServer) *bufconn.Listener {
 	t.Helper()
 	lis := bufconn.Listen(bufSize)
 	creds := credentials.NewTLS(&tls.Config{
@@ -112,7 +129,7 @@ func launchMockWalletServer(t *testing.T, pki *testPKI, mock *mockWalletGRPC) *b
 		MinVersion:   tls.VersionTLS13,
 	})
 	srv := grpc.NewServer(grpc.Creds(creds))
-	walletpb.RegisterWalletServiceServer(srv, mock)
+	walletpb.RegisterWalletServiceServer(srv, svc)
 	t.Cleanup(srv.Stop)
 	go srv.Serve(lis)
 	return lis
@@ -150,8 +167,26 @@ func TestWalletClientGetBalance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetBalance: %v", err)
 	}
-	if bal != 750 {
-		t.Errorf("want 750, got %d", bal)
+	if bal != "750" {
+		t.Errorf("want 750, got %s", bal)
+	}
+}
+
+func TestWalletClientPreservesDecimalPrecision(t *testing.T) {
+	pki := generatePKI(t)
+	mock := &mockWalletGRPCDecimal{amount: "123.45"}
+	lis := launchWalletServer(t, pki, mock)
+	client := newTestClient(t, pki, lis)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	bal, err := client.GetBalance(ctx, "user-1")
+	if err != nil {
+		t.Fatalf("GetBalance: %v", err)
+	}
+	if bal != "123.45" {
+		t.Errorf("want 123.45, got %s — decimal precision lost", bal)
 	}
 }
 
@@ -187,8 +222,8 @@ func TestWalletClientRetryOnUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected success after retry, got: %v", err)
 	}
-	if bal != 100 {
-		t.Errorf("want 100, got %d", bal)
+	if bal != "100" {
+		t.Errorf("want 100, got %s", bal)
 	}
 	mock.mu.Lock()
 	calls := mock.callCount
@@ -281,9 +316,9 @@ func (s *fakeTokenStore) Delete(_ context.Context, userID, tokenID string) error
 	return nil
 }
 
-type walletClientOK struct{ balance int64 }
+type walletClientOK struct{ balance string }
 
-func (w *walletClientOK) GetBalance(_ context.Context, _ string) (int64, error) {
+func (w *walletClientOK) GetBalance(_ context.Context, _ string) (string, error) {
 	return w.balance, nil
 }
 func (w *walletClientOK) ValidateUser(_ context.Context, _ string) (bool, error) {
@@ -293,8 +328,8 @@ func (w *walletClientOK) Close() error { return nil }
 
 type walletClientFail struct{}
 
-func (w *walletClientFail) GetBalance(_ context.Context, _ string) (int64, error) {
-	return 0, status.Error(codes.Unavailable, "wallet service unavailable")
+func (w *walletClientFail) GetBalance(_ context.Context, _ string) (string, error) {
+	return "", status.Error(codes.Unavailable, "wallet service unavailable")
 }
 func (w *walletClientFail) ValidateUser(_ context.Context, _ string) (bool, error) {
 	return false, status.Error(codes.Unavailable, "wallet service unavailable")
@@ -319,7 +354,7 @@ func buildAuthHandler(walletClient domain.WalletClient) (http.Handler, error) {
 }
 
 func TestLoginEnrichedWithBalance(t *testing.T) {
-	mux, err := buildAuthHandler(&walletClientOK{balance: 500})
+	mux, err := buildAuthHandler(&walletClientOK{balance: "500"})
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -335,8 +370,8 @@ func TestLoginEnrichedWithBalance(t *testing.T) {
 
 	var resp struct {
 		Data struct {
-			AccessToken string `json:"access_token"`
-			Balance     *int64 `json:"balance"`
+			AccessToken string  `json:"access_token"`
+			Balance     *string `json:"balance"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
@@ -345,8 +380,8 @@ func TestLoginEnrichedWithBalance(t *testing.T) {
 	if resp.Data.Balance == nil {
 		t.Fatal("expected non-nil balance in login response")
 	}
-	if *resp.Data.Balance != 500 {
-		t.Errorf("want balance=500, got %d", *resp.Data.Balance)
+	if *resp.Data.Balance != "500" {
+		t.Errorf("want balance=500, got %s", *resp.Data.Balance)
 	}
 }
 
@@ -367,8 +402,8 @@ func TestLoginWalletUnavailableStillSucceeds(t *testing.T) {
 
 	var resp struct {
 		Data struct {
-			AccessToken string `json:"access_token"`
-			Balance     *int64 `json:"balance"`
+			AccessToken string  `json:"access_token"`
+			Balance     *string `json:"balance"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
@@ -378,6 +413,6 @@ func TestLoginWalletUnavailableStillSucceeds(t *testing.T) {
 		t.Error("expected non-empty access_token")
 	}
 	if resp.Data.Balance != nil {
-		t.Errorf("expected balance=null when wallet down, got %d", *resp.Data.Balance)
+		t.Errorf("expected balance=null when wallet down, got %s", *resp.Data.Balance)
 	}
 }
