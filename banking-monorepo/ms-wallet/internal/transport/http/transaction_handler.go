@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -55,9 +56,9 @@ func toTransactionResponse(tx domain.Transaction) transactionResponse {
 		ID:            tx.ID,
 		UserID:        tx.UserID,
 		Type:          string(tx.Type),
-		Amount:        tx.Amount.String(),
-		BalanceBefore: tx.BalanceBefore.String(),
-		BalanceAfter:  tx.BalanceAfter.String(),
+		Amount:        tx.Amount.StringFixed(2),
+		BalanceBefore: tx.BalanceBefore.StringFixed(2),
+		BalanceAfter:  tx.BalanceAfter.StringFixed(2),
 		Description:   tx.Description,
 		CreatedAt:     tx.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
@@ -66,9 +67,8 @@ func toTransactionResponse(tx domain.Transaction) transactionResponse {
 func (handler *TransactionHandler) RegisterRoutes(
 	mux *http.ServeMux,
 	jwtMiddleware func(http.Handler) http.Handler,
-	idempotencyMiddleware func(http.Handler) http.Handler,
 ) {
-	mux.Handle("POST /transactions", jwtMiddleware(idempotencyMiddleware(http.HandlerFunc(handler.handleCreate))))
+	mux.Handle("POST /transactions", jwtMiddleware(http.HandlerFunc(handler.handleCreate)))
 	mux.Handle("GET /transactions", jwtMiddleware(http.HandlerFunc(handler.handleList)))
 	mux.Handle("GET /wallet/balance", jwtMiddleware(http.HandlerFunc(handler.handleBalance)))
 }
@@ -202,7 +202,7 @@ func (handler *TransactionHandler) handleBalance(response http.ResponseWriter, r
 		return
 	}
 
-	writeJSON(response, http.StatusOK, apiResponse.Success(balanceResponse{Amount: balance.String()}, requestID))
+	writeJSON(response, http.StatusOK, apiResponse.Success(balanceResponse{Amount: balance.StringFixed(2)}, requestID))
 }
 
 func (handler *TransactionHandler) handleUseCaseError(response http.ResponseWriter, err error, requestID string) {
@@ -217,6 +217,10 @@ func (handler *TransactionHandler) handleUseCaseError(response http.ResponseWrit
 		writeJSON(response, http.StatusUnprocessableEntity, apiResponse.Error("INSUFFICIENT_FUNDS", err.Error(), requestID))
 	case errors.Is(err, domain.ErrDuplicate):
 		writeJSON(response, http.StatusConflict, apiResponse.Error("DUPLICATE", "idempotency key already used", requestID))
+	case errors.Is(err, domain.ErrConflict):
+		writeJSON(response, http.StatusConflict, apiResponse.Error("CONFLICT", "concurrent modification — retry the request", requestID))
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		writeJSON(response, http.StatusRequestTimeout, apiResponse.Error("TIMEOUT", "request timed out", requestID))
 	default:
 		slog.Error("unhandled use case error", "error", err)
 		writeJSON(response, http.StatusInternalServerError, apiResponse.Error("INTERNAL_ERROR", "an unexpected error occurred", requestID))

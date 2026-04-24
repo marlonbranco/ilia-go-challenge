@@ -145,7 +145,11 @@ func (repository *MongoWalletRepository) GetOrCreateWallet(ctx context.Context, 
 		return domain.Wallet{}, fmt.Errorf("%s: %w", errFailedToGetWalletMsg, err)
 	}
 
-	return walletFromDoc(doc), nil
+	wallet, err := walletFromDoc(doc)
+	if err != nil {
+		return domain.Wallet{}, fmt.Errorf("%s: %w", errFailedToGetWalletMsg, err)
+	}
+	return wallet, nil
 }
 
 func (repository *MongoWalletRepository) CreateTransaction(ctx context.Context, tx domain.Transaction) (domain.Transaction, error) {
@@ -156,7 +160,10 @@ func (repository *MongoWalletRepository) CreateTransaction(ctx context.Context, 
 	defer session.EndSession(ctx)
 
 	_, err = session.WithTransaction(ctx, func(ctx context.Context) (any, error) {
-		filter := bson.D{{Key: "user_id", Value: tx.UserID}}
+		filter := bson.D{
+			{Key: "user_id", Value: tx.UserID},
+			{Key: "balance", Value: tx.BalanceBefore.String()},
+		}
 		update := bson.D{
 			{Key: "$set", Value: bson.D{
 				{Key: "balance", Value: tx.BalanceAfter.String()},
@@ -168,7 +175,7 @@ func (repository *MongoWalletRepository) CreateTransaction(ctx context.Context, 
 			return nil, fmt.Errorf("wallet update: %w", updateErr)
 		}
 		if result.MatchedCount == 0 {
-			return nil, fmt.Errorf("wallet not found for user %s", tx.UserID)
+			return nil, fmt.Errorf("wallet balance conflict for user %s: %w", tx.UserID, domain.ErrConflict)
 		}
 
 		doc := transactionToDoc(tx)
@@ -265,14 +272,17 @@ func (repository *MongoWalletRepository) FindByIdempotencyKey(ctx context.Contex
 	return transactionFromDoc(doc)
 }
 
-func walletFromDoc(doc walletDocument) domain.Wallet {
-	balance, _ := decimal.NewFromString(doc.Balance)
+func walletFromDoc(doc walletDocument) (domain.Wallet, error) {
+	balance, err := decimal.NewFromString(doc.Balance)
+	if err != nil {
+		return domain.Wallet{}, fmt.Errorf("wallet %s has invalid stored balance %q: %w", doc.DomainID, doc.Balance, err)
+	}
 	return domain.Wallet{
 		ID:        doc.DomainID,
 		UserID:    doc.UserID,
 		Balance:   balance,
 		UpdatedAt: doc.UpdatedAt,
-	}
+	}, nil
 }
 
 func transactionToDoc(tx domain.Transaction) transactionDocument {

@@ -12,7 +12,6 @@ import (
 
 	"ms-wallet/internal/docs"
 	walletgrpc "ms-wallet/internal/grpc"
-	walletMiddleware "ms-wallet/internal/middleware"
 	"ms-wallet/internal/repository"
 	transportHttp "ms-wallet/internal/transport/http"
 	"ms-wallet/internal/usecase"
@@ -21,7 +20,6 @@ import (
 	walletpb "proto/wallet"
 
 	"github.com/joho/godotenv"
-	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -51,18 +49,6 @@ func main() {
 		slog.Error("JWT_SECRET environment variable is required")
 		os.Exit(1)
 	}
-
-	redisURL := os.Getenv("REDIS_URL")
-	if redisURL == "" {
-		redisURL = "localhost:6379"
-	}
-
-	redisClient := redis.NewClient(&redis.Options{Addr: redisURL})
-	if err := redisClient.Ping(ctx).Err(); err != nil {
-		slog.Error("redis ping failed", "error", err, "addr", redisURL)
-		os.Exit(1)
-	}
-	defer redisClient.Close()
 
 	dbName := os.Getenv("MONGO_DB_NAME")
 	if dbName == "" {
@@ -111,8 +97,6 @@ func main() {
 	txUseCase := usecase.NewTransactionUseCase(walletRepo)
 	txHandler := transportHttp.NewTransactionHandler(txUseCase)
 
-	idemStore := walletMiddleware.NewRedisIdempotencyStore(redisClient)
-	idemMiddleware := walletMiddleware.Idempotency(idemStore)
 	jwtMiddle := middleware.JWTMiddleware("JWT_SECRET")
 
 	mux := http.NewServeMux()
@@ -122,7 +106,7 @@ func main() {
 		w.Write([]byte("OK"))
 	})
 
-	txHandler.RegisterRoutes(mux, jwtMiddle, idemMiddleware)
+	txHandler.RegisterRoutes(mux, jwtMiddle)
 	docs.RegisterRoutes(mux)
 
 	var handler http.Handler = mux

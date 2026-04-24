@@ -4,10 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
+	"time"
 
 	"ms-wallet/internal/domain"
 
 	"github.com/shopspring/decimal"
+)
+
+const (
+	maxConflictRetries = 50
+	conflictBaseDelay = 5 * time.Millisecond
+	conflictMaxDelay  = 80 * time.Millisecond
 )
 
 type TransactionUseCase struct {
@@ -35,17 +43,50 @@ func (useCase *TransactionUseCase) CreateTransaction(ctx context.Context, reques
 		return domain.Transaction{}, fmt.Errorf("idempotency check: %w", err)
 	}
 
-	wallet, err := useCase.walletRepository.GetOrCreateWallet(ctx, request.UserID)
-	if err != nil {
-		return domain.Transaction{}, err
+	for attempt := 0; attempt < maxConflictRetries; attempt++ {
+		if ctx.Err() != nil {
+			return domain.Transaction{}, ctx.Err()
+		}
+
+		wallet, err := useCase.walletRepository.GetOrCreateWallet(ctx, request.UserID)
+		if err != nil {
+			return domain.Transaction{}, err
+		}
+
+		tx, err := domain.NewTransaction(request.UserID, request.Type, request.Amount, wallet.Balance, request.IdempotencyKey, request.Description)
+		if err != nil {
+			return domain.Transaction{}, err
+		}
+
+		result, err := useCase.walletRepository.CreateTransaction(ctx, tx)
+		if err == nil {
+			return result, nil
+		}
+		if errors.Is(err, domain.ErrDuplicate) {
+			if existing, lookupErr := useCase.walletRepository.FindByIdempotencyKey(ctx, request.IdempotencyKey); lookupErr == nil {
+				return existing, nil
+			}
+			return domain.Transaction{}, err
+		}
+		if !errors.Is(err, domain.ErrConflict) {
+			return domain.Transaction{}, err
+		}
+
+		cap := conflictBaseDelay * (1 << min(attempt, 4))
+		if cap > conflictMaxDelay {
+			cap = conflictMaxDelay
+		}
+		jitter := time.Duration(rand.Int64N(int64(cap) + 1))
+		timer := time.NewTimer(jitter)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return domain.Transaction{}, ctx.Err()
+		}
 	}
 
-	tx, err := domain.NewTransaction(request.UserID, request.Type, request.Amount, wallet.Balance, request.IdempotencyKey, request.Description)
-	if err != nil {
-		return domain.Transaction{}, err
-	}
-
-	return useCase.walletRepository.CreateTransaction(ctx, tx)
+	return domain.Transaction{}, fmt.Errorf("gave up after %d attempts: %w", maxConflictRetries, domain.ErrConflict)
 }
 
 func (useCase *TransactionUseCase) GetBalance(ctx context.Context, userID string) (decimal.Decimal, error) {
